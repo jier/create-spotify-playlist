@@ -6,6 +6,6 @@ app= FastAPI()
 def read_route():
     return "Hello World"
 
-@app.get('/test')
-def read_test():
+@app.get('/playlists')
+def get_playlists():
     return "Hello World"
