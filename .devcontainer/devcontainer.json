@@ -24,6 +24,11 @@
 			"extensions": [
 				"ms-python.python"
 			]
+		},
+		"codespaces": {
+			"extensions": [
+				"ms-python.python"
+			]
 		}
 	}
 	// Configure tool-specific properties.
