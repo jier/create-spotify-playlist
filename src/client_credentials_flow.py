@@ -4,6 +4,7 @@ from my_requests import *
 from graph import *
 from genetics import *
 
+# User authentication OAUTH
 auth_manager = SpotifyClientCredentials()
 # auth_manager.client_id
 # auth_manager.client_secret
@@ -19,6 +20,7 @@ sp = spotipy.Spotify(auth=token)
 # sp = spotipy.Spotify(client_credentials_manager=auth_manager)
 
 
+# Retrieve playlist from specific user
 playlists = sp.user_playlists(user="swansoe")
 dataset = {"name": [], "uri": [], "id": []}
 while playlists:
@@ -32,6 +34,7 @@ while playlists:
     else:
         playlists = None
 
+# Retrieve all tracks 
 # url_search_results = [getPlaylistTracks(playlistID=id, userID='swansoe', token=token) for id in dataset['id']]
 url_search_results = getPlaylistTracks(
     playlistID=dataset["id"][0], userID="swansoe", token=token
@@ -42,12 +45,14 @@ playlist_graph = makeGraph(playlist_data)
 print(f"Inital playlist distance: {str(getInitWalkDist(playlist_graph))}")
 population = initPopulation(playlistGraph=playlist_graph, numbDNA=20)
 
+
 for i in range(0, 50):
     population = applyGenetics(population=population, graph=playlist_graph)
     population = sortWalks(population)
     best_walk = population[0]
     # print(f"Best playlist for this population: {str(best_walk[len(best_walk) - 1])}")
 # sp.user_playlist_create
+
 makePlaylist(
     playlistIDS=population[0][:-1],
     oldName=dataset["name"][0],
