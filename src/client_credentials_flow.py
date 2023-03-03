@@ -50,12 +50,12 @@ for i in range(0, 50):
     population = applyGenetics(population=population, graph=playlist_graph)
     population = sortWalks(population)
     best_walk = population[0]
-    # print(f"Best playlist for this population: {str(best_walk[len(best_walk) - 1])}")
+    print(f"Best playlist for this population: {str(best_walk[len(best_walk) - 1])}")
 # sp.user_playlist_create
 
-makePlaylist(
-    playlistIDS=population[0][:-1],
-    oldName=dataset["name"][0],
-    token=token,
-    userID="swansoe",
-)
+# makePlaylist(
+#     playlistIDS=population[0][:-1],
+#     oldName=dataset["name"][0],
+#     token=token,
+#     userID="swansoe",
+# )
