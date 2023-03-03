@@ -35,16 +35,10 @@ access_token = get_access_token(
 )
 # print(access_token)
 # print(os.getenv("SPOTIPY_USER_ID"))
-headers = {"Accept": "application/json", "Authorization": "Bearer " + access_token}
-offset=0
-limit=1
-extra_settings=f"?offset={offset}&limit={limit}"
-url = GET_USERS_PLAYLIST_ENDPOINT.format(user_id=os.getenv("SPOTIPY_USER_ID"))+extra_settings
-resp = requests.get(url=url, headers=headers)
-print(resp.json())
 
 
-def get_user_playlist(user_id, access_token):
+def get_user_playlist(user_id, access_token, offset=0, limit=20):
+    extra_settings=f"?offset={offset}&limit={limit}"
     headers = {"Accept": "application/json", "Authorization": "Bearer " + access_token}
-    url = GET_USERS_PLAYLIST_ENDPOINT.format(user_id=user_id)
+    url = GET_USERS_PLAYLIST_ENDPOINT.format(user_id=user_id)+extra_settings
     return requests.get(url=url, headers=headers).json()
