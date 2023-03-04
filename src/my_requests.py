@@ -3,7 +3,6 @@ import random
 
 import requests
 
-
 from genetics import *
 from graph import *
 from my_requests import *

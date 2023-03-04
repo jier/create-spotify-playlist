@@ -1,8 +1,9 @@
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-from my_requests import *
-from graph import *
+
 from genetics import *
+from graph import *
+from my_requests import *
 
 # User authentication OAUTH
 auth_manager = SpotifyClientCredentials()
@@ -34,7 +35,7 @@ while playlists:
     else:
         playlists = None
 
-# Retrieve all tracks 
+# Retrieve all tracks
 # url_search_results = [getPlaylistTracks(playlistID=id, userID='swansoe', token=token) for id in dataset['id']]
 url_search_results = getPlaylistTracks(
     playlistID=dataset["id"][0], userID="swansoe", token=token
