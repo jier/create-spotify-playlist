@@ -1,7 +1,6 @@
 import base64
 import json
 import os
-
 import requests
 
 # Get environment variables
@@ -24,14 +23,20 @@ ADD_TRACK_TO_PLAYLIST_ENDPOINT = (
 
 def get_access_token(client_id, client_secret):
     auth_url = "https://accounts.spotify.com/api/token"
-    auth_header = {}
-    auth_data = {}
-    message = f"{client_id}:{client_secret}"
-    base64_message = base64.b64encode(message.encode("ascii")).decode("ascii")
-    auth_header["Authorization"] = "Basic " + base64_message
-    auth_data["grant_type"] = "client_credentials"
-    response = requests.post(auth_url, headers=auth_header, data=auth_data).json()
-    return response["access_token"]
+    # message = f"{client_id}:{client_secret}"
+    # base64_message = base64.b64encode(message.encode("ascii")).decode("ascii")
+    auth_header = {
+        "Content-type": "application/x-www-form-urlencoded",
+    }
+    auth_data = {
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+
+    return requests.post(auth_url, headers=auth_header, data=auth_data).json()[
+        "access_token"
+    ]
 
 
 access_token = get_access_token(

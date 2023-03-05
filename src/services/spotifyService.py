@@ -1,6 +1,5 @@
 import base64
 import os
-
 import requests
 
 
@@ -27,15 +26,14 @@ class SpotifyService:
         }
 
     def auth(self) -> bool:
-        message = f"{self._CLIENT_ID}:{self._CLIENT_SECRET}"
-        base64_message = base64.b64encode(message.encode("ascii")).decode("ascii")
         auth_header = {
             "Content-type": "application/x-www-form-urlencoded",
         }
 
         auth_form = {
-            "grant-type": "client_credentials",
-            "Authorization": "Basic " + base64_message,
+            "grant_type": "client_credentials",
+            "client_id": self._CLIENT_ID,
+            "client_secret": self._CLIENT_SECRET,
         }
 
         response = requests.post(self._AUTH_URL, headers=auth_header, data=auth_form)
