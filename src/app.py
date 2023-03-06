@@ -1,9 +1,9 @@
-import os
+from .services.spotifyService import SpotifyService
+from fastapi import Depends
+from fastapi import FastAPI
 from http import client
 
-from fastapi import Depends, FastAPI
-
-from .services.spotifyService import SpotifyService
+import os
 
 app = FastAPI()
 

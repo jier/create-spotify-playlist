@@ -1,9 +1,6 @@
-import base64
-import os
 import requests
 
 
-# TODO fix population of _TOKEN
 class SpotifyService:
     _CLIENT_ID: str
     _CLIENT_SECRET: str
@@ -50,3 +47,6 @@ class SpotifyService:
         url = f"{self._BASE_URL}/users/{user_id}/playlists" + extra_settings
 
         return requests.get(url=url, headers=self._header()).json()
+
+    def _get_next_cursor(self, url: str) -> dict:
+        return requests.post(url=url).json()

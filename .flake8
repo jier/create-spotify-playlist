@@ -5,6 +5,8 @@ exclude = .git,.venv
 max-line-length = 80
 select += B950
 
+statistics = True
+max-complexity = 10
 ignore =
 # D202: No blank lines allowed after function docstring
     D202,

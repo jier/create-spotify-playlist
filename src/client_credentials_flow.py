@@ -1,9 +1,9 @@
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
-
 from genetics import *
 from graph import *
 from my_requests import *
+from spotipy.oauth2 import SpotifyClientCredentials
+
+import spotipy
 
 # User authentication OAUTH
 auth_manager = SpotifyClientCredentials()

@@ -1,12 +1,11 @@
-import json
-import random
-
-import requests
-
 from genetics import *
 from graph import *
 from my_requests import *
 from user import username
+
+import json
+import random
+import requests
 
 # playlistURI = '5Pa5jw42sPQ9SEKu4dEuZN'
 

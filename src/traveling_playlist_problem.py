@@ -1,10 +1,10 @@
-import spotipy
-import spotipy.util as util
-
 from genetics import *
 from graph import *
 from my_requests import *
 from user import username
+
+import spotipy
+import spotipy.util as util
 
 
 def main():
