@@ -1,6 +1,6 @@
-from genetics import *
-from graph import *
-from my_requests import *
+from src.legacy.genetics import *
+from src.legacy.graph import *
+from src.legacy.my_requests import *
 from spotipy.oauth2 import SpotifyClientCredentials
 
 import spotipy

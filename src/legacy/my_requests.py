@@ -1,7 +1,7 @@
-from genetics import *
-from graph import *
-from my_requests import *
-from user import username
+from src.legacy.genetics import *
+from src.legacy.graph import *
+from src.legacy.my_requests import *
+from src.legacy.user import username
 
 import json
 import random
