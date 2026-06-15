@@ -1,6 +1,7 @@
 import json
 import time
 import urllib.parse
+from itertools import islice
 
 import requests
 from fastapi import HTTPException
@@ -123,14 +124,17 @@ class SpotifyService:
         return response.json() if response.content else {}
 
     def get_user_playlists(self, user_id: str, offset: int = 0, limit: int = 10) -> dict:
+        """Single page of playlists for any user. Raw Spotify response."""
         url = f"{settings.spotify_api_base}/users/{user_id}/playlists?offset={offset}&limit={limit}"
         return self._get(url)
 
     def get_my_playlists(self, offset: int = 0, limit: int = 50) -> dict:
+        """Single page of the authenticated user's playlists. Raw Spotify response."""
         url = f"{settings.spotify_api_base}/me/playlists?offset={offset}&limit={limit}"
         return self._get(url)
 
     def search_my_playlists(self, q: str) -> list[dict]:
+        """Fetch all playlists and return those whose name contains q (case-insensitive)."""
         items = []
         offset = 0
         while True:
@@ -142,31 +146,38 @@ class SpotifyService:
         return [p for p in items if q.lower() in p["name"].lower()]
 
     def get_liked_songs(self, offset: int = 0, limit: int = 50) -> dict:
+        """Single page of liked songs. Spotify returns newest-added first. Raw Spotify response."""
         url = f"{settings.spotify_api_base}/me/tracks?offset={offset}&limit={limit}"
         return self._get(url)
 
-    def _paginate_liked_songs(self):
+    def _paginate_liked_songs(self, page_size: int = 50):
+        """
+        Generator — yields every liked song item newest-first (Spotify's native order).
+        Each item: {"added_at": "YYYY-MM-DDTHH:MM:SSZ", "track": {...}}
+        """
         offset = 0
         while True:
-            print(f"[paginate] fetching offset={offset}")
-            page = self.get_liked_songs(offset=offset, limit=50)
-            items = page.get("items", [])
-            if items:
-                print(f"[paginate] got {len(items)} items | first={items[0]['added_at'][:10]} last={items[-1]['added_at'][:10]}")
-            else:
-                print("[paginate] got 0 items, stopping")
-                break
-            yield from items
+            page = self.get_liked_songs(offset=offset, limit=page_size)
+            yield from page.get("items", [])
             if page.get("next") is None:
-                print("[paginate] no next page, done")
                 break
-            offset += 50
+            offset += page_size
 
     def get_liked_songs_before(self, before: str, offset: int = 0, limit: int = 50) -> dict:
+        """
+        Return liked songs added on or before `before` (YYYY-MM-DD), newest-first.
+        Loads all matching items into memory before paginating — use offset/limit to page through results.
+        Example: before="2025-09-16" → songs from 2025-09-16 back to oldest liked song.
+        """
         all_items = [i for i in self._paginate_liked_songs() if i["added_at"][:10] <= before]
         return {"total": len(all_items), "offset": offset, "limit": limit, "items": all_items[offset : offset + limit]}
 
     def get_liked_songs_after(self, after: str, offset: int = 0, limit: int = 50) -> dict:
+        """
+        Return liked songs added on or after `after` (YYYY-MM-DD), newest-first.
+        Stops paginating as soon as a song older than `after` is found (early exit).
+        Example: after="2025-09-16" → songs from now back to 2025-09-16 (the newer portion of your library).
+        """
         all_items = []
         for item in self._paginate_liked_songs():
             if item["added_at"][:10] < after:
@@ -174,15 +185,37 @@ class SpotifyService:
             all_items.append(item)
         return {"total": len(all_items), "offset": offset, "limit": limit, "items": all_items[offset : offset + limit]}
 
+    def delete_liked_songs_on_or_before(self, before: str, dry_run: bool = True) -> int:
+        """
+        Delete liked songs added on or before `before` (YYYY-MM-DD).
+        Streams newest-first, skips newer songs, deletes in 50-track batches (Spotify API max).
+        dry_run=True (default): counts candidates without deleting — always run this first.
+        Returns count of tracks deleted (or would-be deleted).
+        """
+        candidates = (
+            item["track"]["id"]
+            for item in self._paginate_liked_songs()
+            if item["added_at"][:10] <= before
+        )
+        deleted = 0
+        while chunk := list(islice(candidates, 50)):
+            if not dry_run:
+                self.remove_liked_songs(chunk)
+            deleted += len(chunk)
+        return deleted
+
     def remove_liked_songs(self, track_ids: list[str]) -> dict:
+        """Remove up to 50 tracks from liked songs by track ID. Spotify enforces the 50-per-request limit."""
         url = f"{settings.spotify_api_base}/me/tracks"
         return self._delete(url, {"ids": track_ids})
 
     def get_playlist_tracks(self, playlist_id: str, offset: int = 0, limit: int = 50) -> dict:
+        """Single page of tracks in a playlist. Raw Spotify response."""
         url = f"{settings.spotify_api_base}/playlists/{playlist_id}/tracks?offset={offset}&limit={limit}"
         return self._get(url)
 
     def remove_playlist_tracks(self, playlist_id: str, track_ids: list[str]) -> dict:
+        """Remove tracks from a playlist by track ID. Converts IDs to spotify:track URIs internally."""
         url = f"{settings.spotify_api_base}/playlists/{playlist_id}/tracks"
         body = {"tracks": [{"uri": f"spotify:track:{tid}"} for tid in track_ids]}
         return self._delete(url, body)

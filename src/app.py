@@ -64,6 +64,12 @@ def remove_liked_songs(body: RemoveTracksRequest):
     return spotify.remove_liked_songs(track_ids=body.track_ids)
 
 
+@app.delete("/me/tracks/before/{date}")
+def delete_liked_songs_on_or_before(date: date, dry_run: bool = True):
+    count = spotify.delete_liked_songs_on_or_before(date.isoformat(), dry_run=dry_run)
+    return {"deleted": count, "dry_run": dry_run}
+
+
 @app.get("/playlists/{playlist_id}/tracks")
 def get_playlist_tracks(playlist_id: str, offset: int = 0, limit: int = 50):
     return spotify.get_playlist_tracks(playlist_id=playlist_id, offset=offset, limit=limit)
