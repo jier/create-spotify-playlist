@@ -4,16 +4,9 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from .services.spotifyService import SpotifyService
-from .settings import settings
+from .services import playlist_builder, spotify
 
 app = FastAPI()
-
-spotify = SpotifyService(
-    client_id=settings.spotify_client_id,
-    client_secret=settings.spotify_client_secret,
-    redirect_uri=settings.spotify_redirect_uri,
-)
 
 
 class RemoveTracksRequest(BaseModel):
@@ -83,3 +76,18 @@ def remove_playlist_tracks(playlist_id: str, body: RemoveTracksRequest):
 @app.get("/users/{user_id}/playlists")
 def get_user_playlists(user_id: str):
     return spotify.get_user_playlists(user_id)
+
+
+@app.post("/me/playlists/seed/{track_id}")
+def build_playlist_from_seed(track_id: str, n: int = 20, dry_run: bool = True):
+    return playlist_builder.build_playlist_from_seed(track_id, n=n, dry_run=dry_run)
+
+
+@app.post("/me/playlists/{genre}/chronological")
+def build_chronological_playlist(genre: str, dry_run: bool = True):
+    return playlist_builder.build_genre_playlist_chronological(genre, dry_run=dry_run)
+
+
+@app.post("/me/playlists/{genre}/tsp")
+def build_tsp_playlist(genre: str, dry_run: bool = True):
+    return playlist_builder.build_genre_playlist_tsp(genre, dry_run=dry_run)
