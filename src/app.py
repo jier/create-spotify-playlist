@@ -83,11 +83,19 @@ def build_playlist_from_seed(track_id: str, n: int = 20, dry_run: bool = True):
     return playlist_builder.build_playlist_from_seed(track_id, n=n, dry_run=dry_run)
 
 
-@app.post("/me/playlists/{genre}/chronological")
+@app.post(
+    "/me/playlists/{genre}/chronological",
+    deprecated=True,
+    description="Searches only liked songs. Prefer POST /me/playlists/seed/{track_id} for full catalog discovery.",
+)
 def build_chronological_playlist(genre: str, dry_run: bool = True):
     return playlist_builder.build_genre_playlist_chronological(genre, dry_run=dry_run)
 
 
-@app.post("/me/playlists/{genre}/tsp")
+@app.post(
+    "/me/playlists/{genre}/tsp",
+    deprecated=True,
+    description="Searches only liked songs. Prefer POST /me/playlists/seed/{track_id} for full catalog discovery.",
+)
 def build_tsp_playlist(genre: str, dry_run: bool = True):
     return playlist_builder.build_genre_playlist_tsp(genre, dry_run=dry_run)

@@ -23,9 +23,11 @@ class Settings(BaseSettings):
     # Spotify deprecated /audio-features (Nov 2024) — genre + release year are the remaining signals.
     playlist_genre_weight: float = 1.0
     playlist_year_weight: float = 0.5
-    # Candidates with distance > this threshold are dropped before TSP.
+    # Jaccard genre distance threshold for candidate filtering (applied to genre overlap only, not total distance).
+    # 0.75 = candidate must share >25% genre overlap with seed.
     # Prevents off-genre tracks (e.g. afrogospel, kompa) from entering playlist when seed genre is CCM/worship.
-    playlist_max_candidate_distance: float = 0.6
+    # Progressive fallback relaxes this to 0.85 → 0.95 → 1.0 before trying artist discography.
+    playlist_max_candidate_distance: float = 0.75
 
     # Local storage
     token_path: Path = Path(__file__).parent.parent / "token.json"

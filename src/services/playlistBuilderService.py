@@ -332,18 +332,22 @@ class PlaylistBuilderService:
         candidate_features = self._build_track_features(list(candidate_tracks.values()), artist_genres)
         all_built_features = seed_features + candidate_features
 
-        # Step 5 — rank + progressive threshold fallback
+        # Step 5 — filter by Jaccard genre distance (not total distance), rank by total distance for TSP.
+        # Jaccard-only filter cleanly separates "is this track genre-relevant?" from "how to order it?".
+        # Total distance (Jaccard + year) can exceed 1.0, so using it as a threshold silently drops valid tracks.
+        seed_genres_set = seed_feat[1].get("genres", set())
         fallback = "genre_search"
         threshold_used = settings.playlist_max_candidate_distance
         top_n: list[list] = []
 
         if candidate_features:
-            scored = sorted(
-                [(c, _get_distance(seed_feat, c)) for c in candidate_features],
-                key=lambda x: x[1],
-            )
-            for threshold in [settings.playlist_max_candidate_distance, 0.7, 0.8, 1.0]:
-                top_n = [c for c, d in scored if d <= threshold][:n]
+            for threshold in [settings.playlist_max_candidate_distance, 0.85, 0.95, 1.0]:
+                genre_relevant = [
+                    c
+                    for c in candidate_features
+                    if _jaccard_distance(seed_genres_set, c[1].get("genres", set())) <= threshold
+                ]
+                top_n = sorted(genre_relevant, key=lambda c: _get_distance(seed_feat, c))[:n]
                 if len(top_n) >= 3:
                     threshold_used = threshold
                     if threshold > settings.playlist_max_candidate_distance:
