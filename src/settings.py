@@ -14,8 +14,7 @@ class Settings(BaseSettings):
     spotify_auth_base: str = "https://accounts.spotify.com"
     spotify_api_base: str = "https://api.spotify.com/v1"
     spotify_scopes: str = (
-        "playlist-read-private playlist-modify-private playlist-modify-public "
-        "user-library-read user-library-modify"
+        "playlist-read-private playlist-modify-private playlist-modify-public user-library-read user-library-modify"
     )
 
     # Local storage

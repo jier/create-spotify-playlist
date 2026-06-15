@@ -1,18 +1,18 @@
-## Lint your code using pylint
 .PHONY: lint
 lint:
-	python -m flake8 --version
-	python -m flake8 src/
-	## Run tests using pytest
+	uv run ruff check src/
+
+.PHONY: format
+format:
+	uv run ruff format src/
+
+.PHONY: typecheck
+typecheck:
+	uv run pyright src/
+
+.PHONY: check
+check: lint typecheck
+
 .PHONY: test
 test:
-	python -m pytest --version
-	python -m pytest tests## Format your code using black
-.PHONY: black
-black:
-	python -m black --version
-	python -m black src/
-
-.PHONY: sort
-sort:
-	python -m isort .
+	uv run pytest tests/

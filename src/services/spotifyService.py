@@ -192,11 +192,7 @@ class SpotifyService:
         dry_run=True (default): counts candidates without deleting — always run this first.
         Returns count of tracks deleted (or would-be deleted).
         """
-        candidates = (
-            item["track"]["id"]
-            for item in self._paginate_liked_songs()
-            if item["added_at"][:10] <= before
-        )
+        candidates = (item["track"]["id"] for item in self._paginate_liked_songs() if item["added_at"][:10] <= before)
         deleted = 0
         while chunk := list(islice(candidates, 50)):
             if not dry_run:

@@ -11,9 +11,20 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "black>=24.0.0",
-    "flake8>=7.0.0",
-    "isort>=5.13.0",
     "pre-commit>=3.8.0",
     "pytest>=8.0.0",
+    "pyright>=1.1.0",
+    "ruff>=0.9.0",
 ]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+exclude = ["src/legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+exclude = ["src/legacy"]
