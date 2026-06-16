@@ -28,6 +28,17 @@ class Settings(BaseSettings):
     # Prevents off-genre tracks (e.g. afrogospel, kompa) from entering playlist when seed genre is CCM/worship.
     # Progressive fallback relaxes this to 0.85 → 0.95 → 1.0 before trying artist discography.
     playlist_max_candidate_distance: float = 0.75
+    # Max tracks per artist in the candidate pool.
+    # Prevents popular artists (Elevation Worship, Hillsong) from flooding search results and dominating the playlist.
+    playlist_max_tracks_per_artist: int = 3
+
+    # Simulated annealing selection parameters (strategy="sa").
+    # Energy = avg_relevance − sa_diversity_weight × avg_pairwise_diversity (both normalised).
+    # sa_diversity_weight: 0.0 = pure relevance, 1.0 = equal weight, >1.0 = diversity-first.
+    sa_diversity_weight: float = 0.5
+    sa_temperature_start: float = 1.0
+    sa_temperature_end: float = 0.01
+    sa_iterations: int = 1000
 
     # Local storage
     token_path: Path = Path(__file__).parent.parent / "token.json"

@@ -1,0 +1,395 @@
+# Worklog — create-spotify-playlist
+
+Narrative of decisions, pivots, and discoveries made building this tool.
+Ordered chronologically. Includes dead ends and why they happened.
+
+## Data
+
+Current data used to build playlists — 17 liked songs as of June 2026.
+
+```
+┌────────────────────────┬────────────────────────────────────┬───────────────────────────────────┐
+│        Track ID        │                Name                │              Artist               │
+├────────────────────────┼────────────────────────────────────┼───────────────────────────────────┤
+│ 5VXIB8xTvgVPggv1Zmt1KZ │ So Good                            │ Papy Messages                     │
+│ 1goiRWxiG3GTlODrdDZ7NR │ Jireh                              │ Elevation Worship / Maverick City │
+│ 3JsccmLDh628MBNW17aMBP │ I Looked Up                        │ Sons Of Sunday                    │
+│ 1BqBJvGZn8G7buagrQfmJP │ Lead Me On - Live                  │ Chandler Moore                    │
+│ 7HAMOncV54OLHqXuKRBXIh │ So Will I (100 Billion X)          │ Hillsong UNITED                   │
+│ 1fcytmf4DjBc7ZkhSPnNIP │ Behold (Then Sings My Soul) - Live │ Hillsong Worship                  │
+│ 4BuSQyy705aZqKoAiKfqKJ │ Make Room                          │ The Church Will Sing              │
+│ 4ElNxglBjcrASiGn58t9Jm │ God Only Knows                     │ for KING & COUNTRY                │
+│ 5lwi7XvSzlGsJ6NIGR1qAn │ Love of God (Live)                 │ Brandon Lake / Phil Wickham       │
+│ 5xREHZNlYVYoVDkVmrztUS │ Gotham City                        │ DizzyEight                        │
+│ 43HieN3qrUrZUgAsyhFTDM │ Always Been You - Live             │ Naomi Raine                       │
+│ 6QYz6UacqclzLtzi2QTtol │ Way Maker                          │ Leeland                           │
+│ 0KIv0Lho9vsPCj8Sac21IV │ Flowers                            │ Samantha Ebert                    │
+│ 59uuKDpLFhHtCWwMudospF │ Goodness Of God - Live             │ CeCe Winans                       │
+│ 0Bn1DSXfisvfKjGUwI6rzW │ Oceans (Where Feet May Fail)       │ Hillsong UNITED                   │
+│ 3w3FVxMsBMHKaElaJPnkRD │ Way Maker - Live                   │ Leeland                           │
+│ 6Up545NUflOiXo8cEraH49 │ You Say                            │ Lauren Daigle                     │
+└────────────────────────┴────────────────────────────────────┴───────────────────────────────────┘
+```
+
+---
+
+## Phase 1 — Foundation
+
+**Stack**: FastAPI + uv + pydantic-settings. No spotipy — raw HTTP via `requests` against the Spotify Web API. Auth flow manual (PKCE-style code exchange, token refresh, token persisted to `token.json`).
+
+**Core service**: `SpotifyService` — wraps all Spotify API calls, handles token lifecycle. Endpoints: liked songs (paginated), playlists (get/search/remove tracks), delete tracks.
+
+**First real problem**: date filtering on liked songs. Spotify returns `added_at` as ISO 8601 (`"2025-09-16T14:32:00Z"`). Initial implementation tried datetime parsing. Observation: ISO 8601 dates sort lexicographically — `"2025-09-16" < "2025-10-01"` is valid string comparison. Kept it simple, no datetime import needed.
+
+**Batch delete by date**: `delete_liked_songs_on_or_before(before, dry_run=True)`. Key insight — Spotify returns liked songs newest-first, so we can stream and stop early for "after date" queries, but "before date" requires scanning everything. Used `itertools.islice` + walrus operator for clean 50-track batching (Spotify's API max per delete request). `dry_run=True` as default on all destructive operations — never deletes without explicit opt-in.
+
+---
+
+## Phase 2 — Tooling
+
+Replaced `black` + `isort` + `flake8` with `ruff` (lint + format in one tool). Added `pyright` for type checking. Updated `Makefile` (`lint`, `format`, `typecheck`, `check`). Updated `.pre-commit-config.yaml`. Both tools configured to exclude `src/legacy/` (legacy code kept for reference, not linted).
+
+---
+
+## Phase 3 — Playlist Builder (first attempt)
+
+Goal: build playlists from liked songs by genre, ordered by BPM — so listening flows naturally without shuffle.
+
+**Design decision**: new `PlaylistBuilderService` class (not inheriting `SpotifyService` — composition over inheritance). Singleton pattern: `services/__init__.py` exports `spotify` and `playlist_builder` instances. Both consumed by `app.py` via import.
+
+**Travelling Sales Man (TSP) genetic algorithm** ported from `src/legacy/` with fixes:
+- Graph changed from `list[list]` (O(n²) lookups) to `dict[str, dict[str, float]]` (O(1))
+- Walk score stored as last element of walk list
+- Selection via tournament (3 random candidates, keep best)
+- Crossover splices two parent orderings
+- Mutation rotates walk by one position
+
+**BPM ordering**: called `GET /audio-features` to get tempo, energy, danceability per track. Plan was to sort by BPM so playlist flows from slow → fast or clusters by energy.
+
+---
+
+## Phase 4 — Spotify November 2024 Deprecations (Major Pivot)
+
+**Discovery**: `GET /audio-features` returns 403 for apps registered after November 2024. Also deprecated: `/recommendations`, `popularity`, `preview_url`.
+
+This broke the entire BPM/energy ordering strategy. Three signals gone at once.
+
+**Redesign**: replaced audio features with two remaining signals:
+1. **Jaccard genre distance** — `1 - |A∩B| / |A∪B|` on artist genre tag sets
+2. **Release year distance** — `min(|year_A - year_B| / 50, 1.0)` normalized over 50-year span
+
+Both weights tunable in `settings.py` (`playlist_genre_weight=1.0`, `playlist_year_weight=0.5`).
+
+**Endpoint rename**: `/bpm` → `/chronological` (now sorts by release year since tempo is gone). Two endpoints kept: chronological (simple sort) and TSP (genetic algorithm ordering by genre+year distance).
+
+**Distance is now clean**: `Jaccard × genre_weight + year_dist × year_weight`. Max possible = 1.5.
+
+---
+
+## Phase 5 — Seed-Based Discovery
+
+**Problem**: with only 17 liked songs, genre-based endpoints return too few tracks to be useful. Need to search Spotify's full catalog.
+
+**First attempt**: `GET /artists/{id}/related-artists` → get top tracks from related artists → rank by Jaccard distance to seed. Clean design.
+
+**Second hit from Spotify deprecations**: `/related-artists` returns 404 (also deprecated November 2024). `/recommendations` also gone.
+
+**Second redesign**: `GET /search?q=genre:{genre}&type=track` — still available. Search by each of the seed's genre tags (up to 3), collect candidates, rank by Jaccard distance, run TSP.
+
+New endpoint: `POST /me/playlists/seed/{track_id}?n=20&dry_run=true`
+
+Steps documented in code:
+1. Fetch seed track + primary artist genres via `/artists`
+2. Search Spotify for tracks matching each of the seed's genres (up to 3)
+3. Batch-fetch artist genres for all candidates
+4. Build genre+year features for seed and all candidates
+5. Rank candidates by Jaccard distance to seed — take top n
+6. Run TSP on those n for smooth internal ordering
+7. Prepend seed track → create playlist or return dry run stats
+
+Old genre-based endpoints (`/chronological`, `/tsp`) marked deprecated in FastAPI — they only search your own liked songs, seed endpoint searches the full catalog.
+
+---
+
+## Phase 6 — Deduplication Bug
+
+**Problem found**: Spotify has multiple versions of the same song (single release, album version, deluxe edition) — each with a different track ID. Naive dedup by track ID misses these. Result: "Jesus Be The Name" appearing twice, "SO BE IT" appearing twice in the same playlist.
+
+**Fix**: dedup candidates by `(track_name.lower(), primary_artist_id)` — first version seen wins. Removed 51 duplicates from a 150-candidate pool for Jireh seed.
+
+---
+
+## Phase 7 — Genre Pollution & Threshold Filter
+
+**Problem**: `genre:gospel` is a massive bucket. Brazilian gospel, Haitian kompa gospel, afrogospel, traditional gospel all share the "gospel" tag but are stylistically unrelated to CCM/worship. On non-deterministic search runs, Spotify returns different tracks — sometimes the good CCM results, sometimes the obscure international gospel.
+
+**First fix (wrong)**: added `playlist_max_candidate_distance = 0.6` applied to **total distance** (Jaccard + year_dist). Too strict — tracks with 2 of 5 shared genres (Jaccard=0.6) plus any year gap exceeded 0.6 total. Legitimately similar CCM tracks filtered out.
+
+**Second problem found**: max possible total distance = 1.5 (not 1.0). Tracks with empty genres (Jaccard=1.0) + any year gap have total > 1.0. Using 1.0 as the "no filter" fallback silently blocked candidates.
+
+**Correct fix**: threshold applied to **Jaccard distance only** (genre relevance), not total distance. Total distance still used for TSP ranking. Default threshold raised to 0.75.
+
+Progressive fallback chain:
+- `0.75` (strict, >25% genre overlap required)
+- `0.85` → `0.95` → `1.0` (relax if < 3 candidates pass)
+- Artist discography fallback (`/artists/{id}/albums` → track list) for niche/untagged artists
+
+---
+
+## Phase 8 — Niche Artist Fallback
+
+**Problem**: low-popularity artists (e.g. Papy Messages, popularity=0) have no genre tags on Spotify. Genre search for `genre:Papy Messages` returns nothing. Endpoint returned a generic error.
+
+**Fix**: three-stage error handling:
+1. No genres → fall through to genre search with artist name (returns 0 → continue)
+2. All thresholds exhausted → fetch artist's own discography via `/artists/{id}/albums`
+3. Discography also empty → return descriptive error with `seed_genres` and `candidates_searched`
+
+Response now includes `fallback` (which strategy ran) and `threshold_used` (what Jaccard cutoff was applied) so you can see exactly what happened.
+
+---
+
+## Phase 9 — Artist Popularity Bias & Cap
+
+**Problem**: popular artists (Elevation Worship, Hillsong, Bethel Music) dominated every playlist. Two compounding reasons:
+1. Spotify search returns popular artists first — so they flood the candidate pool across all genre queries
+2. Jaccard correctly identifies them as most similar to each other — they all share identical tag sets (`ccm, christian, gospel, pop worship, worship`), so they rank first regardless of artist cap on the pool
+
+**First fix (wrong)**: capped tracks per artist in the *candidate pool* only. Did nothing to the final playlist — top 20 by Jaccard distance were still all Elevation/Hillsong/Bethel because they share exact genre tags and all have low distance from each other.
+
+**Correct fix**: cap applied at *selection* — walk candidates in distance order, skip an artist once it contributes `playlist_max_tracks_per_artist` tracks to `top_n`. Cap on candidates still kept to reduce API round-trips (fewer artist genre fetches).
+
+```python
+# settings.py
+playlist_max_tracks_per_artist: int = 3
+
+# Step 5 — selection with artist cap enforced
+for c in sorted(genre_relevant, key=lambda c: _get_distance(seed_feat, c)):
+    artists = candidate_tracks.get(c[0], {}).get("artists", [])
+    aid = artists[0]["id"] if artists else ""
+    if artist_final_counts.get(aid, 0) >= settings.playlist_max_tracks_per_artist:
+        continue
+    artist_final_counts[aid] = artist_final_counts.get(aid, 0) + 1
+    top_n.append(c)
+    if len(top_n) >= n:
+        break
+```
+
+**Also fixed**: threshold relaxation previously stopped at `>= 3` candidates — stopped too early when n=20 was requested. Changed to `>= n` so thresholds keep relaxing until the playlist can actually be filled.
+
+**Result with Jireh seed**: 125 candidates, 31 tracks, `improvement_pct` 59.4% — playlist now spans Charity Gayle, Mozaiek Worship, Gateway Worship, CeCe Winans, Leeland, Matt Redman, All Sons & Daughters alongside the popular artists, each capped at 3.
+
+**Considered but rejected**: containment/overlap coefficient instead of Jaccard. Rejected because containment has no upper bound on genre drift — a track with 50 tags containing all seed genres gets similarity=1.0 regardless of the other 45 tags.
+
+```
+┌────────────────────┬──────────────────────┬───────────────────────────────────────┐
+│       Metric       │       Formula        │               Behavior                │
+├────────────────────┼──────────────────────┼───────────────────────────────────────┤
+│ Jaccard (current)  │ |A∩B| / |A∪B|        │ Penalizes BOTH sides for extra tags   │
+│ Containment (left) │ |A∩B| / |seed|       │ "Does candidate cover seed's genres?" │
+│ Overlap coeff      │ |A∩B| / min(|A|,|B|) │ Rewards being a subset of seed        │
+└────────────────────┴──────────────────────┴───────────────────────────────────────┘
+```
+
+---
+
+## Phase 10 — Understanding TSP Scores
+
+**What the numbers mean**:
+
+- `initial_score` — total path length of a *random* ordering before the algorithm runs. Sum of distances between every adjacent track pair. With 30 tracks = 29 edges, max per edge = 1.5 (Jaccard × 1.0 + year_dist × 0.5).
+- `tsp_score` — same sum after the genetic algorithm finishes. Lower = smoother transitions between adjacent tracks.
+- `improvement_pct = (1 - tsp_score / initial_score) × 100`
+
+**Reading the Jireh result** (`initial: 11.69`, `tsp: 4.75`, `improvement: 59.4%`):
+
+```
+Average transition before: 11.69 / 29 = 0.40 per edge  (out of max 1.5)
+Average transition after:   4.75 / 29 = 0.16 per edge
+```
+
+59.4% improvement means real genre/year variance existed in the pool and the algorithm successfully clustered similar tracks together — `{christian, worship}` tracks group before bridging into `{ccm, christian, pop worship, worship}` and so on, rather than jumping randomly.
+
+**Interpreting the scale**:
+- `0%` — nothing to optimize (all tracks identical genre+year, initial already near 0) or algorithm too small (population/generations)
+- `20–40%` — moderate variance, tracks fairly similar
+- `40–60%` — strong improvement, meaningful genre/year spread in pool
+- `>60%` — large variance, algorithm had lots of room to find a better route
+
+**Tag density and edge weights — the nuance**:
+
+Tag count doesn't change *which* nodes TSP visits (it visits all of them). It changes *edge weights*, which affects ordering.
+
+```
+Within 5-tag cluster:   EW {ccm, christian, gospel, pop worship, worship}
+                     Hillsong {ccm, christian, gospel, pop worship, worship}
+                     → Jaccard = 1 - 5/5 = 0.0  (zero-cost edge)
+
+Cross-cluster:             EW {ccm, christian, gospel, pop worship, worship}
+                      Charity {christian, worship}
+                     → |A∩B|=2, |A∪B|=5 → Jaccard = 1 - 2/5 = 0.6
+
+Within 2-tag cluster:  Charity {christian, worship}
+                       Gateway {christian, worship}
+                     → Jaccard = 1 - 2/2 = 0.0  (also zero-cost)
+```
+
+Both clusters are internally tight (0.0 edges). But crossing between them costs 0.6. TSP minimises total path — it groups each cluster as a consecutive block with one expensive jump between them. What you actually hear: `EW → Hillsong → Bethel → [0.6 jump] → Charity Gayle → Gateway → The Belonging Co`.
+
+Tag density itself isn't the bias. The bias is **asymmetry**: a 5-tag artist is always 0.6 away from a 2-tag artist, but two 5-tag artists with identical tags are 0.0 from each other.
+
+The *selection-stage* bias (Step 5) is separate: 5-tag artists always rank first in the distance sort (Jaccard 0.0 to a 5-tag seed) so they fill their `artist_cap` slots before lesser-known artists are even considered. That's a ranking problem, not a TSP problem.
+
+**Duration signal**: `duration_ms` available on all track objects, could proxy "live vs studio" (live tracks typically longer). Not yet wired into distance computation.
+
+---
+
+## Phase 11 — Pluggable Selection Strategies (SA vs Greedy)
+
+**Root problem**: greedy artist-cap selection collapses the selected set onto a single cluster in genre space. Even with cap=3, all 20 picks come from artists sharing near-identical tag sets. The set has near-zero variance across genre dimensions.
+
+**What was discussed**: three classes of solution exist in literature for this type of constrained diverse subset selection problem.
+
+| Method | Mechanism | Stochastic | Multi-dim | Complexity |
+|---|---|---|---|---|
+| Greedy cap (current) | hard per-artist limit | no | no | O(n) |
+| MMR | λ × relevance − (1−λ) × similarity-to-selected | no | soft | O(n × C) |
+| Simulated Annealing | energy minimisation with temperature | yes | yes | tunable |
+| DPP + MCMC | det(L_S) kernel, sample diverse subsets | yes | yes | O(n²) per step |
+| Multi-aspect (Agrawal) | cover multiple intent axes | no | yes | O(n × intents) |
+
+**Key insight from discussion**: MMR, DPPs, and SA all solve the same question — "find n picks where the selected set doesn't collapse to a single point in genre space." They differ in how they enforce it:
+- Artist cap: hard discrete constraint, doesn't understand feature space
+- MMR λ: greedy soft penalty, can't undo early bad picks
+- SA: stochastic, can escape local optima by accepting worse moves with probability `e^(-ΔE/T)`
+- DPP: `det = 0` when two items identical, maximised when items span feature space — zero-variance subsets have zero probability
+
+**Why DPP is overkill here**: DPPs are a probabilistic *sampler*, not a deterministic ranker. Requires computing/approximating det(L) for a similarity kernel matrix. Mathematically elegant but complex. SA gives most of the benefit without the kernel math.
+
+**Decision**: implement SA as a pluggable strategy alongside greedy cap. Single `strategy` query param on the API (`greedy` or `sa`) so both can be compared on the same seed.
+
+**SA energy function**:
+```
+E(S) = avg_relevance(S) − β × avg_pairwise_diversity(S)
+     = (Σ dist(seed, sᵢ) / n) − β × (Σ dist(sᵢ, sⱼ) / C(n,2))
+```
+β = `sa_diversity_weight` (default 0.5). At β=0: pure relevance. As β→∞: pure diversity. Normalised so β=1.0 means equal average weight on relevance and pairwise spread.
+
+**Architecture**: Step 5 extracted from `build_playlist_from_seed` into `src/services/selectionStrategies.py`. Distance functions moved there too. Both `select_greedy` and `select_sa` share the same signature → pluggable without changing orchestrator logic.
+
+**Papers cited**:
+- Carbonell & Goldstein (1998) — MMR: https://dl.acm.org/doi/10.1145/290941.291025
+- Agrawal et al. (2009) — Multi-aspect diversification: https://dl.acm.org/doi/10.1145/1498759.1498766
+- Kulesza & Taskar (2012) — DPPs for machine learning: https://arxiv.org/abs/1207.6083
+- Kirkpatrick et al. (1983) — Simulated annealing: https://www.science.org/doi/10.1126/science.220.4598.671
+
+---
+
+**Empirical comparison — Jireh seed, n=20, β=0.5:**
+
+| | Greedy | SA |
+|---|---|---|
+| tsp_score | 2.73 | 3.94 |
+| initial_score | 5.30 | 7.88 |
+| improvement_pct | 48.5% | 50% |
+| EW tracks | 3 | 1 |
+| Bethel tracks | 3 | 1 |
+| New artists (vs greedy) | — | Charity Gayle, Gateway Worship, Josiah Queen, ELEVATION RHYTHM |
+
+**Reading the tradeoff**: SA's `initial_score` is higher (7.88 vs 5.30) because the selected pool IS more diverse — adjacent tracks have larger genre jumps. TSP minimises those, landing at 3.94 vs greedy's 2.73. The playlist flows slightly less smoothly but no longer sounds like a single artist's extended set.
+
+`improvement_pct` is higher for SA (50% vs 48.5%) even though absolute `tsp_score` is worse — more room to optimise = more diverse pool. TSP doing the same relative job on harder material.
+
+**β sensitivity**: β=0.5 delivers clear diversity gains. Raise β → 1.0: SA pushes further into niche territory. Lower β → 0: SA converges toward greedy behaviour. The knob is meaningful and interpretable.
+
+---
+
+**Empirical comparison — CeCe Winans seed `{christian, gospel, worship}`, n=20, β=0.5:**
+
+| | Greedy | SA |
+|---|---|---|
+| tsp_score | 2.15 | 7.16 |
+| initial_score | 6.34 | 9.03 |
+| improvement_pct | 66.1% | 20.7% |
+| Notable artists | Leeland, Mozaiek, Charity Gayle, SEU, Gateway | Mary Mary, Bebe Winans, Piano Prayer, All Sons & Daughters |
+
+**Greedy wins here.** 3-tag seed creates a wider Jaccard gate — more artists naturally pass the 0.75 threshold, so greedy already finds genuine variety without diversity forcing. SA's energy function then overshoots, pulling in gospel R&B (Mary Mary, 2000), gospel-only (Bebe Winans), and instrumental worship (Piano Prayer) — all technically pass the threshold:
+
+```
+{gospel} vs {christian, gospel, worship}       → Jaccard = 1 - 1/3 = 0.667 ≤ 0.75 ✓
+{christian r&b, gospel} vs {christian, gospel, worship} → Jaccard = 1 - 1/4 = 0.75 ✓ (boundary)
+```
+
+SA rewards these because they're maximally diverse from everything else already selected. Stylistically coherent as "gospel broadly" — not coherent as a listening experience. tsp_score 7.16 confirms TSP couldn't bridge those genre gaps.
+
+**Key finding — β is not seed-agnostic:**
+
+| Seed tag count | Greedy behaviour | SA behaviour | Winner |
+|---|---|---|---|
+| 5 tags (Jireh) | popular-artist flood, homogeneous | diverse CCM, new artists | SA |
+| 3 tags (CeCe) | naturally diverse, all cohesive | genre drift into R&B/instrumental | Greedy |
+
+SA's diversity pressure scales with how many candidates pass the threshold. A 3-tag seed admits a wider candidate pool, giving SA more "exotic" material to explore. β=0.5 that works for Jireh overshoots for CeCe.
+
+**Open question**: β should probably scale with seed tag density — high-tag seeds need more diversity forcing, low-tag seeds need less. Alternatively, expose β as a per-request API parameter and let the user tune it.
+
+---
+
+## Phase 12 — Tags Are the Search Space proxy of  deprecated /audio-features
+
+**The deeper problem**: β adjustment is a symptom fix. The CeCe result forced a more fundamental question — the entire system's search space is defined by genre tags, and that definition is flawed in two structural ways.
+
+**Problem 1 — tag count changes metric resolution.** Jaccard 0.667 means different things depending on tag density:
+```
+{gospel} vs {christian, gospel, worship}            → 0.667  (1 shared / 3 union)
+{christian, gospel} vs {christian, gospel, worship} → 0.333  (2 shared / 3 union)
+```
+Same numerical distance, completely different musical meaning. The metric is not comparable across artists with different tag counts. A 1-tag artist at distance 0.667 from the seed is NOT musically equivalent to a 2-tag artist at 0.667. The Jaccard score conflates "few shared tags" with "many tags but few overlapping".
+
+**Problem 2 — tags are not atomic or orthogonal.** `gospel` spans CCM, gospel R&B, afrogospel, kompa gospel — disconnected musical regions sharing one label. SA sees tracks with `gospel` as occupying the same genre dimension and maximises spread across them. Mary Mary (`christian r&b, gospel`) and Maverick City (`christian, gospel, worship`) both have `gospel` → SA treats them as covering different corners of that dimension → rewards selecting both. Musically, they are from different worlds.
+
+SA is doing exactly what it was designed to do. The search space it is exploring is just not what we want it to be. Every component — Jaccard threshold, `get_distance`, SA energy, TSP graph edges — inherits this assumption: **genre tags ≈ musical similarity**.
+
+**What genre tags actually are:**
+
+> genre tags = vocabulary words in a bag-of-words model, unweighted — where the most frequent terms (`worship`, `christian`, `gospel`) dominate every distance calculation despite carrying the least discriminating information, and rare terms (`christian r&b`, `christian folk`, `country christian`) that mark real stylistic boundaries contribute almost nothing because they appear in fewer intersection sets.
+
+The common tags are stop words. The rare tags are the actual signal. Jaccard treats them equally.
+
+**What the search space actually means — signal vs noise:**
+
+The real search space we want: *"would a listener naturally move from track A to track B without noticing a jarring shift."* Its true dimensions are tempo feel, emotional weight, production density, lyrical intimacy, cultural/regional sound, era. That is what `/audio-features` partially gave us. Spotify deprecated it.
+
+Genre tags are Spotify editorial labels assigned to *artists*, not tracks. They cluster by cultural scene (`ccm` = white American evangelical radio), production era (`pop worship` = post-Hillsong 2010s), and genre lineage (`gospel` = Black church tradition). They partially capture the real dimensions but conflate several at once:
+
+| Signal (real dimension) | Tag proxy | Noise introduced |
+|---|---|---|
+| Cultural/scene alignment | `ccm`, `christian folk`, `christian r&b` | `christian`, `worship` overlap everything |
+| Production era | `pop worship` (2010s) | `gospel` spans 1960–2026 |
+| Regional origin | `afrogospel`, `kompa gospel` | `gospel` swallows them |
+| Emotional register | — | no tag exists for this |
+
+> **genre tags = coordinates in a space where the axes are unevenly informative.** The axes everyone shares (`worship`, `christian`) have near-zero resolution because they separate nothing. The axes few share (`christian r&b`, `christian folk`, `country christian`) have the highest resolution because they mark real boundaries. Jaccard treats all axes as equal — the metric is dominated by noise, blind to signal.
+
+Weighted Jaccard doesn't redefine the search space. It suppresses the loudest noise so weaker but meaningful tags can be heard. We are fixing a broken proxy through a better proxy. The honest limit: tags don't span the real search space. They are noisy projections of it. The actual dimensions — tempo feel, emotional weight, production density — were what `/audio-features` gave us. We are approximating with what Spotify left available.
+
+**The principled fix — weighted Jaccard with IDF-style tag weights:**
+```
+w(tag) = log(total_candidates / candidates_with_tag)
+
+weighted_jaccard(A, B) = Σ min(w(t)) for t in A∩B
+                         ─────────────────────────────
+                         Σ max(w(t)) for t in A∪B
+```
+`worship` (80% of candidates) → weight ≈ 0.22 → near-zero contribution.
+`christian r&b` (2% of candidates) → weight ≈ 3.9 → high contribution.
+
+Now distance between seed and Mary Mary reflects the true signal (`christian r&b` is high-information divergence from `{christian, gospel, worship}`), not a reward. SA's search space becomes "variation in specific, rare genre dimensions" — which is the actual musical variation we want.
+
+**Ongoing / Next:**
+
+**Weighted Jaccard**: compute tag IDF over the candidate pool per request (cheap, O(candidates × tags)), replace `jaccard_distance` in `selectionStrategies.py` with weighted version.
+
+**β per request**: expose `sa_diversity_weight` as a query param for per-seed tuning in the meantime.
+
+**Duration distance**: `duration_ms` as third signal — proxy for live vs studio without needing deprecated audio features.

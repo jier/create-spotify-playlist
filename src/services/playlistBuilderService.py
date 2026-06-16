@@ -1,12 +1,13 @@
 import random
 from itertools import islice
+from typing import Literal
 
 from ..settings import settings
+from .selectionStrategies import get_distance, select_greedy, select_sa
 from .spotifyService import SpotifyService
 
 # Graph type: track_id → {other_track_id → distance}
 Graph = dict[str, dict[str, float]]
-
 
 # ---------------------------------------------------------------------------
 # Distance (Jaccard genre similarity + release year proximity)
@@ -16,20 +17,8 @@ Graph = dict[str, dict[str, float]]
 #   1. Genre Jaccard distance  = 1 - (|genres_A ∩ genres_B| / |genres_A ∪ genres_B|)
 #   2. Release year distance   = min(|year_A - year_B| / 50, 1.0)  (normalized over 50-year span)
 # Weights are tunable via settings.playlist_genre_weight / playlist_year_weight.
+# Distance functions live in selectionStrategies.py (imported above).
 # ---------------------------------------------------------------------------
-
-
-def _jaccard_distance(genres_a: set[str], genres_b: set[str]) -> float:
-    union = genres_a | genres_b
-    if not union:
-        return 1.0  # no genre info on either — treat as maximally distant
-    return 1.0 - len(genres_a & genres_b) / len(union)
-
-
-def _get_distance(a: list, b: list) -> float:
-    genre_dist = _jaccard_distance(a[1].get("genres", set()), b[1].get("genres", set()))
-    year_dist = min(abs(a[1].get("release_year", 0) - b[1].get("release_year", 0)) / 50.0, 1.0)
-    return settings.playlist_genre_weight * genre_dist + settings.playlist_year_weight * year_dist
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +29,7 @@ def _get_distance(a: list, b: list) -> float:
 def _make_graph(data: list[list]) -> Graph:
     """Build adjacency graph where edge weight = distance between two tracks."""
     return {
-        track[0]: {other[0]: _get_distance(track, other) for other in data if other[0] != track[0]} for track in data
+        track[0]: {other[0]: get_distance(track, other) for other in data if other[0] != track[0]} for track in data
     }
 
 
@@ -265,7 +254,13 @@ class PlaylistBuilderService:
 
         return result
 
-    def build_playlist_from_seed(self, track_id: str, n: int = 20, dry_run: bool = True) -> dict:
+    def build_playlist_from_seed(
+        self,
+        track_id: str,
+        n: int = 20,
+        dry_run: bool = True,
+        strategy: Literal["greedy", "sa"] = "greedy",
+    ) -> dict:
         """
         Build a playlist seeded from one track using genre-based Spotify search.
         Spotify deprecated /related-artists and /recommendations (Nov 2024).
@@ -274,12 +269,13 @@ class PlaylistBuilderService:
           1. Fetch seed track + primary artist genres via /artists
           2. Search Spotify for tracks matching each of the seed's genres (up to 3)
              Deduplicate by (name, primary_artist_id) — Spotify has single + album versions
+             Artist cap: max playlist_max_tracks_per_artist tracks per artist in candidate pool
           3. Batch-fetch artist genres for all candidate tracks
           4. Build genre+year features for seed and all candidates
-          5. Rank candidates by Jaccard distance to seed, progressive threshold fallback:
-               a. playlist_max_candidate_distance (default 0.6) — strict, genre-accurate
-               b. Relax to 0.7 → 0.8 → 1.0 if < 3 candidates pass (niche genre)
-               c. Fetch artist's own discography if still < 3 candidates (no genre tags / unknown artist)
+          5. Select top n via pluggable strategy (see selectionStrategies.py):
+               greedy — artist-capped walk in distance order, progressive Jaccard threshold relaxation
+               sa     — simulated annealing: minimises avg_relevance − β × avg_pairwise_diversity
+             Discography fallback if strategy returns < n (niche/untagged artist)
           6. Run TSP on top n for smooth internal ordering
           7. Prepend seed track → create playlist or return dry run stats
         """
@@ -302,6 +298,7 @@ class PlaylistBuilderService:
         search_genres = list(seed_genres)[:3] or [seed_artist_name]
         candidate_tracks: dict[str, dict] = {}
         seen_signatures: set[tuple[str, str]] = set()
+        artist_track_counts: dict[str, int] = {}
         for genre in search_genres:
             query = f'genre:"{genre}"' if " " in genre else f"genre:{genre}"
             for track in self._spotify.search_tracks(query, limit=50):
@@ -309,10 +306,14 @@ class PlaylistBuilderService:
                 if not tid or tid == track_id:
                     continue
                 artists = track.get("artists", [])
-                sig = (track.get("name", "").lower(), artists[0]["id"] if artists else "")
+                primary_artist_id = artists[0]["id"] if artists else ""
+                sig = (track.get("name", "").lower(), primary_artist_id)
                 if sig in seen_signatures:
                     continue
+                if artist_track_counts.get(primary_artist_id, 0) >= settings.playlist_max_tracks_per_artist:
+                    continue
                 seen_signatures.add(sig)
+                artist_track_counts[primary_artist_id] = artist_track_counts.get(primary_artist_id, 0) + 1
                 candidate_tracks[tid] = track
 
         # Step 3 — batch-fetch artist genres for candidates
@@ -332,30 +333,17 @@ class PlaylistBuilderService:
         candidate_features = self._build_track_features(list(candidate_tracks.values()), artist_genres)
         all_built_features = seed_features + candidate_features
 
-        # Step 5 — filter by Jaccard genre distance (not total distance), rank by total distance for TSP.
-        # Jaccard-only filter cleanly separates "is this track genre-relevant?" from "how to order it?".
-        # Total distance (Jaccard + year) can exceed 1.0, so using it as a threshold silently drops valid tracks.
-        seed_genres_set = seed_feat[1].get("genres", set())
+        # Step 5 — pluggable selection strategy (see selectionStrategies.py)
+        strategy_fn = select_sa if strategy == "sa" else select_greedy
+        top_n: list[list] = []
         fallback = "genre_search"
         threshold_used = settings.playlist_max_candidate_distance
-        top_n: list[list] = []
 
         if candidate_features:
-            for threshold in [settings.playlist_max_candidate_distance, 0.85, 0.95, 1.0]:
-                genre_relevant = [
-                    c
-                    for c in candidate_features
-                    if _jaccard_distance(seed_genres_set, c[1].get("genres", set())) <= threshold
-                ]
-                top_n = sorted(genre_relevant, key=lambda c: _get_distance(seed_feat, c))[:n]
-                if len(top_n) >= 3:
-                    threshold_used = threshold
-                    if threshold > settings.playlist_max_candidate_distance:
-                        fallback = f"relaxed_threshold_{threshold}"
-                    break
+            top_n, fallback, threshold_used = strategy_fn(candidate_features, seed_feat, candidate_tracks, n)
 
-        # Fallback — artist discography (niche/untagged artist)
-        if len(top_n) < 3:
+        # Discography fallback — strategy-agnostic, triggers when pool is too small
+        if len(top_n) < n:
             disc_tracks = self._spotify.get_artist_tracks(seed_artist_id)
             new_disc: list[dict] = []
             for t in disc_tracks:
@@ -366,11 +354,7 @@ class PlaylistBuilderService:
             if new_disc:
                 disc_features = self._build_track_features(new_disc, artist_genres)
                 all_built_features += disc_features
-                all_scored = sorted(
-                    [(c, _get_distance(seed_feat, c)) for c in candidate_features + disc_features],
-                    key=lambda x: x[1],
-                )
-                top_n = [c for c, _ in all_scored][:n]
+                top_n, _, _ = strategy_fn(candidate_features + disc_features, seed_feat, candidate_tracks, n)
                 fallback = "artist_discography"
                 threshold_used = 1.0
 
@@ -399,8 +383,10 @@ class PlaylistBuilderService:
 
         result: dict = {
             "dry_run": dry_run,
+            "selection_strategy": strategy,
             "fallback": fallback,
             "threshold_used": threshold_used,
+            "artist_cap": settings.playlist_max_tracks_per_artist,
             "seed": self._track_label(seed_track, seed_feat[1]),
             "seed_genres": sorted(seed_genres),
             "candidates_found": len(candidate_tracks),

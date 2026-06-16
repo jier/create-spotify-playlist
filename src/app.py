@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Literal
 
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
@@ -79,8 +80,13 @@ def get_user_playlists(user_id: str):
 
 
 @app.post("/me/playlists/seed/{track_id}")
-def build_playlist_from_seed(track_id: str, n: int = 20, dry_run: bool = True):
-    return playlist_builder.build_playlist_from_seed(track_id, n=n, dry_run=dry_run)
+def build_playlist_from_seed(
+    track_id: str,
+    n: int = 20,
+    dry_run: bool = True,
+    strategy: Literal["greedy", "sa"] = "greedy",
+):
+    return playlist_builder.build_playlist_from_seed(track_id, n=n, dry_run=dry_run, strategy=strategy)
 
 
 @app.post(
