@@ -1,13 +1,38 @@
 from datetime import date
 from typing import Literal
 
-from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from .services import playlist_builder, spotify
 
+LOOPBACK_ADDRESSES = {"127.0.0.1", "::1"}
+
+
+class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
+    """
+    This app has no authentication of its own. Loopback binding is the only
+    access control it has, so it is enforced here rather than relying on the
+    process being started with the right --host flag. If this app is ever
+    run in a container, behind a proxy, or exposed through a tunnel, this
+    guard still rejects every request that does not come from the same
+    machine.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        client_host = request.client.host if request.client else None
+        if client_host not in LOOPBACK_ADDRESSES:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "This service only accepts requests from localhost."},
+            )
+        return await call_next(request)
+
+
 app = FastAPI()
+app.add_middleware(LoopbackOnlyMiddleware)
 
 
 class RemoveTracksRequest(BaseModel):
@@ -31,9 +56,9 @@ def callback(code: str):
 
 
 @app.get("/me/playlists")
-def get_my_playlists(q: str | None = None, offset: int = 0, limit: int = 50):
-    if q:
-        items = spotify.search_my_playlists(q)
+def get_my_playlists(query: str | None = None, offset: int = 0, limit: int = 50):
+    if query:
+        items = spotify.search_my_playlists(query)
         return {"total": len(items), "items": items}
     return spotify.get_my_playlists(offset=offset, limit=limit)
 
