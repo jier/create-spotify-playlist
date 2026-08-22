@@ -1,3 +1,5 @@
+import logging
+from contextlib import asynccontextmanager
 from datetime import date
 from typing import Literal
 
@@ -6,10 +8,12 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from src.algorithms.persistence import read_run_trace
+from src.algorithms.persistence import cleanup_old_runs, read_run_trace
 from src.services import playlist_builder, spotify
+from src.settings import settings
 
 LOOPBACK_ADDRESSES = {"127.0.0.1", "::1"}
+logger = logging.getLogger(__name__)
 
 
 class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
@@ -32,7 +36,23 @@ class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Prune run traces older than settings.runs_retention_days on every startup.
+
+    Nothing else deletes these — every build_playlist_from_seed call mints a
+    fresh run_id, so runs/ grows unbounded otherwise. `make clean-runs` runs
+    the same cleanup on demand without restarting the server.
+    """
+    deleted = cleanup_old_runs(settings.runs_dir, settings.runs_retention_days)
+    if deleted:
+        logger.info(
+            "Startup cleanup: removed %d run trace(s) older than %s days", len(deleted), settings.runs_retention_days
+        )
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(LoopbackOnlyMiddleware)
 
 
@@ -147,7 +167,7 @@ def get_run_trace(run_id: str):
     on-disk format exactly rather than re-parsing into a JSON array.
     """
     try:
-        content = read_run_trace(run_id)
+        content = read_run_trace(run_id, runs_dir=settings.runs_dir)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     return PlainTextResponse(content, media_type="application/x-ndjson")

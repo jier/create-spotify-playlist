@@ -5,8 +5,23 @@ from unittest.mock import Mock
 import pytest
 
 from src.services.spotifyService import SpotifyService
+from src.settings import settings
 
 REDIRECT_URI = "http://127.0.0.1:8000/callback"
+
+
+@pytest.fixture(autouse=True)
+def isolated_runs_dir(tmp_path, monkeypatch):
+    """Every test's run traces go to a per-test tmp_path, never the real
+    project runs/ directory.
+
+    Autouse: any test that builds a PlaylistBuilderService and calls
+    build_playlist_from_seed writes a real JSONL file via RunTraceWriter —
+    this was silently polluting the actual project runs/ directory on every
+    test run before this fixture existed, discovered by noticing files
+    accumulate there after `make check`.
+    """
+    monkeypatch.setattr(settings, "runs_dir", tmp_path / "runs")
 
 
 @pytest.fixture

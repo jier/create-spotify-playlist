@@ -22,8 +22,15 @@ Captures, per stage:
     (every member), each referencing a tsp_walk by walk_id rather than
     repeating its track ids.
   - final: the ordered playlist the run produced.
+
+Nothing in this module reads the global settings singleton (runs_dir is
+always an explicit parameter here) — the settings.runs_dir /
+settings.runs_retention_days values live in the orchestration layer
+(PlaylistBuilderService, src/app.py's lifespan) and get passed in explicitly,
+same convention as GreedySelectionConfig/SimulatedAnnealingConfig.
 """
 
+import time
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -115,3 +122,27 @@ def read_run_trace(run_id: str, runs_dir: Path | str = "runs") -> str:
     if not path.exists():
         raise FileNotFoundError(f"No run trace for run_id={run_id!r}")
     return path.read_text()
+
+
+def cleanup_old_runs(runs_dir: Path | str = "runs", max_age_days: float = 7.0) -> list[str]:
+    """
+    Delete run trace files last modified more than max_age_days ago.
+
+    Nothing currently deletes these otherwise — every build_playlist_from_seed
+    call mints a fresh run_id, so runs/ grows without bound over normal use.
+    Age is mtime-based, not creation time (a run is never rewritten after
+    being written once, so the two are equivalent in practice here).
+
+    Returns the run_ids deleted, for logging/testing. No-op, returns [], if
+    runs_dir doesn't exist yet.
+    """
+    base = Path(runs_dir)
+    if not base.exists():
+        return []
+    cutoff = time.time() - max_age_days * 86400
+    deleted = []
+    for path in sorted(base.glob("*.jsonl")):
+        if path.stat().st_mtime < cutoff:
+            path.unlink()
+            deleted.append(path.stem)
+    return deleted

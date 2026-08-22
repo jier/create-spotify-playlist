@@ -345,7 +345,7 @@ class PlaylistBuilderService:
         tsp_generation are not implemented yet).
         """
         run_id = run_id or uuid.uuid4().hex
-        writer = RunTraceWriter(run_id)
+        writer = RunTraceWriter(run_id, runs_dir=settings.runs_dir)
         # Step 1 — seed track + primary artist genres
         fetched = self._fetch_seed_and_genres(track_id)
         if fetched is None:

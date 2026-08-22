@@ -1,7 +1,9 @@
+from collections.abc import Iterable
+
 import pytest
 
 from src.algorithms.models import DistanceWeights, TSPGenerationEvent, TSPWalkEvent
-from src.algorithms.tsp import TSPOptimizer, order_by_tsp
+from src.algorithms.tsp import TSPOptimizer, TSPTraceEvent, order_by_tsp
 
 
 @pytest.mark.parametrize("track_count", [6, 2], ids=["six_tracks", "two_tracks"])
@@ -37,11 +39,11 @@ def test_order_by_tsp_zero_score_when_all_tracks_are_identical(rock_track_featur
 # ---------------------------------------------------------------------------
 
 
-def _walk_events(trace: list) -> list[TSPWalkEvent]:
+def _walk_events(trace: Iterable[TSPTraceEvent]) -> list[TSPWalkEvent]:
     return [e for e in trace if isinstance(e, TSPWalkEvent)]
 
 
-def _generation_events(trace: list) -> list[TSPGenerationEvent]:
+def _generation_events(trace: Iterable[TSPTraceEvent]) -> list[TSPGenerationEvent]:
     return [e for e in trace if isinstance(e, TSPGenerationEvent)]
 
 
@@ -109,3 +111,76 @@ def test_run_to_completion_bundles_walk_and_generation_events_with_final_result(
     assert isinstance(initial_score, float)
     assert len(_generation_events(trace)) == 6
     assert len(_walk_events(trace)) >= 1
+
+
+# ---------------------------------------------------------------------------
+# TSPOptimizer — walk lineage (parent_walk_ids)
+# ---------------------------------------------------------------------------
+
+
+def test_initial_population_walks_have_no_parents(rock_track_features):
+    """generation 0's random population has no lineage — nothing produced it."""
+    track_features = rock_track_features(6)
+    optimizer = TSPOptimizer(track_features, DistanceWeights(), population_size=8, generations=0)
+
+    trace = list(optimizer.run())
+
+    walks = _walk_events(trace)
+    assert len(walks) == 8
+    assert all(w.parent_walk_ids == [] for w in walks)
+
+
+def test_every_walk_parent_id_was_already_registered_before_it(rock_track_features):
+    """A walk_id can only ever be referenced as a parent after its own
+    TSPWalkEvent has already appeared — parents must precede children,
+    exactly like a DAG (or git commit parents)."""
+    track_features = rock_track_features(6)
+    optimizer = TSPOptimizer(track_features, DistanceWeights(), population_size=8, generations=15)
+
+    known_walk_ids: set[int] = set()
+    for walk in _walk_events(optimizer.run()):
+        for parent_id in walk.parent_walk_ids:
+            assert parent_id in known_walk_ids, f"walk {walk.walk_id} references parent {parent_id} before it exists"
+        known_walk_ids.add(walk.walk_id)
+
+
+def test_every_walk_has_zero_one_or_two_parents(rock_track_features):
+    """0 = random init, 1 = mutation (single-parent rotation), 2 = crossover.
+    Never anything else, structurally, regardless of how many generations run."""
+    track_features = rock_track_features(6)
+    optimizer = TSPOptimizer(track_features, DistanceWeights(), population_size=8, generations=15)
+
+    for walk in _walk_events(optimizer.run()):
+        assert len(walk.parent_walk_ids) in (0, 1, 2)
+
+
+def test_crossover_produces_two_parent_walks_and_mutation_produces_one_parent_walks(rock_track_features):
+    """Over enough generations, both lineage shapes must actually occur —
+    this is what proves crossover and mutation are both really wired into
+    register(), not just structurally possible but never exercised."""
+    track_features = rock_track_features(6)
+    optimizer = TSPOptimizer(track_features, DistanceWeights(), population_size=8, generations=15)
+
+    parent_counts = {len(w.parent_walk_ids) for w in _walk_events(optimizer.run())}
+
+    assert 2 in parent_counts, "no crossover-produced (two-parent) walk ever appeared"
+    assert 1 in parent_counts, "no mutation-produced (one-parent) walk ever appeared"
+
+
+def test_a_walk_carried_forward_by_mutation_can_have_a_same_generation_crossover_child_as_its_parent(
+    rock_track_features,
+):
+    """The hard case: a crossover child gets mutated in the very same
+    _apply_genetics() call, before TSPOptimizer ever gets a chance to process
+    a generation boundary. The mutated walk's parent must still resolve to
+    that same-generation crossover child (a two-parent walk itself), proving
+    register() resolves ids immediately at creation time rather than only
+    after a generation completes."""
+    track_features = rock_track_features(6)
+    optimizer = TSPOptimizer(track_features, DistanceWeights(), population_size=8, generations=15)
+
+    walks_by_id = {w.walk_id: w for w in _walk_events(optimizer.run())}
+    one_parent_walks = [w for w in walks_by_id.values() if len(w.parent_walk_ids) == 1]
+    assert any(len(walks_by_id[w.parent_walk_ids[0]].parent_walk_ids) == 2 for w in one_parent_walks), (
+        "no mutation ever had a same-run crossover child as its parent"
+    )

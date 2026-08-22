@@ -1,4 +1,6 @@
 import json
+import os
+import time
 
 import pytest
 
@@ -9,7 +11,7 @@ from src.algorithms.models import (
     TSPPopulationMember,
     TSPWalkEvent,
 )
-from src.algorithms.persistence import RunTraceWriter, read_run_trace
+from src.algorithms.persistence import RunTraceWriter, cleanup_old_runs, read_run_trace
 
 
 def _read_lines(writer: RunTraceWriter) -> list[dict]:
@@ -123,12 +125,12 @@ def test_write_threshold_step_writes_the_event_with_stage(tmp_path):
 
 def test_write_tsp_walk_writes_the_event_with_stage(tmp_path):
     writer = RunTraceWriter("run_1", runs_dir=tmp_path)
-    event = TSPWalkEvent(walk_id=3, track_ids=["t1", "t2", "t3"])
+    event = TSPWalkEvent(walk_id=3, track_ids=["t1", "t2", "t3"], parent_walk_ids=[1, 2])
 
     writer.write_tsp_walk(event)
 
     lines = _read_lines(writer)
-    assert lines == [{"stage": "tsp_walk", "walk_id": 3, "track_ids": ["t1", "t2", "t3"]}]
+    assert lines == [{"stage": "tsp_walk", "walk_id": 3, "track_ids": ["t1", "t2", "t3"], "parent_walk_ids": [1, 2]}]
 
 
 def test_write_tsp_generation_writes_the_full_population_nested(tmp_path):
@@ -223,3 +225,64 @@ def test_read_run_trace_raises_file_not_found_for_missing_run(tmp_path):
 def test_read_run_trace_rejects_run_id_that_would_escape_runs_dir(tmp_path, malicious_run_id):
     with pytest.raises(ValueError):
         read_run_trace(malicious_run_id, runs_dir=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# cleanup_old_runs
+# ---------------------------------------------------------------------------
+
+
+def _touch_with_age(path, age_days: float) -> None:
+    path.write_text("{}\n")
+    age_seconds = age_days * 86400
+    stamp = time.time() - age_seconds
+    os.utime(path, (stamp, stamp))
+
+
+def test_cleanup_old_runs_deletes_files_older_than_max_age(tmp_path):
+    old = tmp_path / "old_run.jsonl"
+    _touch_with_age(old, age_days=10)
+
+    deleted = cleanup_old_runs(tmp_path, max_age_days=7)
+
+    assert deleted == ["old_run"]
+    assert not old.exists()
+
+
+def test_cleanup_old_runs_keeps_files_within_max_age(tmp_path):
+    recent = tmp_path / "recent_run.jsonl"
+    _touch_with_age(recent, age_days=1)
+
+    deleted = cleanup_old_runs(tmp_path, max_age_days=7)
+
+    assert deleted == []
+    assert recent.exists()
+
+
+def test_cleanup_old_runs_handles_a_mix_of_old_and_recent(tmp_path):
+    old = tmp_path / "old_run.jsonl"
+    recent = tmp_path / "recent_run.jsonl"
+    _touch_with_age(old, age_days=30)
+    _touch_with_age(recent, age_days=0.1)
+
+    deleted = cleanup_old_runs(tmp_path, max_age_days=7)
+
+    assert deleted == ["old_run"]
+    assert not old.exists()
+    assert recent.exists()
+
+
+def test_cleanup_old_runs_returns_empty_list_when_runs_dir_does_not_exist(tmp_path):
+    missing_dir = tmp_path / "does_not_exist_yet"
+
+    assert cleanup_old_runs(missing_dir, max_age_days=7) == []
+
+
+def test_cleanup_old_runs_ignores_non_jsonl_files(tmp_path):
+    (tmp_path / "notes.txt").write_text("not a run trace")
+    os.utime(tmp_path / "notes.txt", (time.time() - 30 * 86400, time.time() - 30 * 86400))
+
+    deleted = cleanup_old_runs(tmp_path, max_age_days=7)
+
+    assert deleted == []
+    assert (tmp_path / "notes.txt").exists()

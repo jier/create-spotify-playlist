@@ -105,11 +105,21 @@ class TSPWalkEvent(BaseModel):
     written once per distinct ordering for the whole run, not once per
     (generation, population slot) — that's what keeps a full, untruncated
     population trace affordable.
+
+    parent_walk_ids records how this ordering was produced, recorded at the
+    moment it's first created (not reconstructed later by diffing
+    generations):
+      []        — initial random population (generation 0), no parent.
+      [p]       — produced by mutation (single-parent rotation) of walk p.
+      [a, b]    — produced by crossover of walks a and b.
+    Lets a frontend replay an actual parent -> child morph, not just "this
+    walk_id appeared in this generation."
     """
 
     stage: str = "tsp_walk"
     walk_id: int
     track_ids: list[str]
+    parent_walk_ids: list[int] = []
 
 
 class TSPPopulationMember(BaseModel):

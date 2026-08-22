@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     # Local storage
     token_path: Path = Path(__file__).parent.parent / "token.json"
 
+    # Playlist DNA run traces (src/algorithms/persistence.py). Absolute, not
+    # relative to cwd — same reasoning as env_file below: a relative "runs"
+    # path silently lands wherever the process happens to be started from.
+    runs_dir: Path = Path(__file__).parent.parent / "runs"
+    # Age-based retention: runs older than this are deleted on app startup
+    # (see lifespan in src/app.py) and via `make clean-runs`.
+    runs_retention_days: float = 7.0
+
     model_config = SettingsConfigDict(
         env_file=Path(__file__).parent.parent / ".env",
         env_file_encoding="utf-8",
