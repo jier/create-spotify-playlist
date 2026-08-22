@@ -15,7 +15,7 @@ The project shows distinctive playlist selection and ordering. It uses similarit
 Track progress here. Check each box when done.
 
 1. [x] Rotate the Spotify client secret and refresh token as a precaution.
-2. [ ] Add an OAuth state parameter and verify it on callback.
+2. [x] Add an OAuth state parameter and verify it on callback.
 2b. [x] Bind the server to localhost only, enforced by middleware, not just the run command.
 3. [x] Write README.md, .env.example, and LICENSE.
 4. [ ] Add tests for selection strategies (Jaccard distance, greedy, simulated annealing) and mocked Spotify and token flows.
