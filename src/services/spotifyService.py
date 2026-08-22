@@ -1,4 +1,5 @@
 import json
+import secrets
 import time
 import urllib.parse
 from itertools import islice
@@ -15,6 +16,7 @@ class SpotifyService:
         self._client_secret = client_secret
         self._redirect_uri = redirect_uri
         self._token_data = self._load_token()
+        self._pending_state: str | None = None
 
     def __repr__(self) -> str:
         authenticated = bool(self._token_data.get("access_token"))
@@ -32,15 +34,41 @@ class SpotifyService:
         self._token_data = data
 
     def get_auth_url(self) -> str:
+        """
+        Build the Spotify authorization URL and issue a fresh state value.
+
+        state is single use and stored only in memory on this instance, tying
+        the value that comes back on /callback to the /login call that
+        started this flow. Without it, anyone could send their own Spotify
+        authorization code to our /callback and have it linked into our
+        token.json, or replay an old callback URL.
+        """
+        state = secrets.token_urlsafe(32)
+        self._pending_state = state
         params = {
             "client_id": self._client_id,
             "response_type": "code",
             "redirect_uri": self._redirect_uri,
             "scope": settings.spotify_scopes,
+            "state": state,
         }
         return f"{settings.spotify_auth_base}/authorize?{urllib.parse.urlencode(params)}"
 
-    def exchange_code(self, code: str) -> None:
+    def exchange_code(self, code: str, state: str) -> None:
+        """
+        Exchange an authorization code for a token pair.
+
+        Rejects the exchange outright if state does not match the value
+        issued by the most recent get_auth_url() call, or if /callback is hit
+        without a prior /login call at all. Single use: the pending state is
+        cleared after the first check, matching or not, so a state value can
+        never be reused across two callback attempts.
+        """
+        expected_state = self._pending_state
+        self._pending_state = None
+        if expected_state is None or not secrets.compare_digest(state, expected_state):
+            raise HTTPException(status_code=400, detail="Invalid or missing OAuth state; start over at /login")
+
         auth_url = f"{settings.spotify_auth_base}/api/token"
         try:
             response = requests.post(

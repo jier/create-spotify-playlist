@@ -50,8 +50,8 @@ def login():
 
 
 @app.get("/callback")
-def callback(code: str):
-    spotify.exchange_code(code)
+def callback(code: str, state: str):
+    spotify.exchange_code(code, state)
     return {"message": "Authenticated successfully"}
 
 
