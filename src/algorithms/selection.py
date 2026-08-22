@@ -13,7 +13,13 @@ import random
 from collections.abc import Generator
 
 from src.algorithms.distance import get_distance, jaccard_distance
-from src.algorithms.models import DistanceWeights, GreedySelectionConfig, SAIterationEvent, SimulatedAnnealingConfig
+from src.algorithms.models import (
+    DistanceWeights,
+    GreedySelectionConfig,
+    SAIterationEvent,
+    SimulatedAnnealingConfig,
+    ThresholdStepEvent,
+)
 
 
 def _filter_by_threshold(
@@ -30,16 +36,17 @@ def select_greedy(
     candidate_tracks: dict[str, dict],
     n: int,
     config: GreedySelectionConfig,
-) -> tuple[list[list], str, float]:
+) -> tuple[list[list], str, float, list[ThresholdStepEvent]]:
     """
     Walk candidates in distance order, enforce per-artist cap at selection time.
     Relax Jaccard threshold progressively until n tracks are found.
-    Returns (top_n, fallback_label, threshold_used).
+    Returns (top_n, fallback_label, threshold_used, threshold_trace).
     """
     seed_genres = seed_feat[1].get("genres", set())
     fallback = "genre_search"
     threshold_used = config.max_candidate_distance
     top_n: list[list] = []
+    threshold_trace: list[ThresholdStepEvent] = []
 
     for threshold in [config.max_candidate_distance, 0.85, 0.95, 1.0]:
         genre_relevant = _filter_by_threshold(candidate_features, seed_genres, threshold)
@@ -55,12 +62,16 @@ def select_greedy(
             if len(top_n) >= n:
                 break
         threshold_used = threshold
+        accepted = len(top_n) >= n
+        threshold_trace.append(
+            ThresholdStepEvent(threshold=threshold, candidates_passing=len(genre_relevant), accepted=accepted)
+        )
         if threshold > config.max_candidate_distance:
             fallback = f"relaxed_threshold_{threshold}"
-        if len(top_n) >= n:
+        if accepted:
             break
 
-    return top_n, fallback, threshold_used
+    return top_n, fallback, threshold_used, threshold_trace
 
 
 def _energy(
@@ -133,14 +144,20 @@ class SimulatedAnnealer:
         seed_genres = seed_feat[1].get("genres", set())
         threshold_used = config.max_candidate_distance
         genre_relevant: list[list] = []
+        threshold_trace: list[ThresholdStepEvent] = []
         for threshold in [config.max_candidate_distance, 0.85, 0.95, 1.0]:
             genre_relevant = _filter_by_threshold(candidate_features, seed_genres, threshold)
             threshold_used = threshold
-            if len(genre_relevant) >= n:
+            accepted = len(genre_relevant) >= n
+            threshold_trace.append(
+                ThresholdStepEvent(threshold=threshold, candidates_passing=len(genre_relevant), accepted=accepted)
+            )
+            if accepted:
                 break
 
         self._genre_relevant = genre_relevant
         self._threshold_used = threshold_used
+        self.threshold_trace = threshold_trace
         self._shortcut = len(genre_relevant) <= n
         if self._shortcut:
             return
@@ -200,8 +217,8 @@ class SimulatedAnnealer:
         fallback = f"sa_β{config.diversity_weight}_T{config.temperature_start}→{config.temperature_end}"
         return [self._genre_relevant[i] for i in self._selected], fallback, self._threshold_used
 
-    def run_to_completion(self) -> tuple[list[list], str, float, list[SAIterationEvent]]:
-        """Drains run() and returns (top_n, fallback_label, threshold_used, trace) together."""
+    def run_to_completion(self) -> tuple[list[list], str, float, list[SAIterationEvent], list[ThresholdStepEvent]]:
+        """Drains run(). Returns (top_n, fallback_label, threshold_used, sa_trace, threshold_trace)."""
         trace: list[SAIterationEvent] = []
         generator = self.run()
         while True:
@@ -209,4 +226,4 @@ class SimulatedAnnealer:
                 trace.append(next(generator))
             except StopIteration as stop:
                 top_n, fallback, threshold_used = stop.value
-                return top_n, fallback, threshold_used, trace
+                return top_n, fallback, threshold_used, trace, self.threshold_trace

@@ -426,3 +426,25 @@ Verified against a real run, not just unit tests: `genre:gospel` seed, `strategy
 **Not yet captured, real gaps not silently skipped**: threshold-relaxation steps inside `select_greedy` / the discography fallback path aren't emitted as events. Per-generation TSP trace doesn't exist — `order_by_tsp` returns only `(ordered_ids, final_score, initial_score)`, would need turning into a generator the same way `SimulatedAnnealer.run()` already is.
 
 **HTTP exposure**: nothing serves a run's JSONL file over HTTP yet. Needed before the item 6 web interface can consume it from a browser instead of reading the local file directly.
+
+## Phase 15 — threshold_step, TSP as a Generator, HTTP Exposure
+
+Closed out the three gaps Phase 14 ended on.
+
+**threshold_step**: both `select_greedy` and `SimulatedAnnealer.__init__` already looped over `[max_candidate_distance, 0.85, 0.95, 1.0]` relaxing the Jaccard threshold until enough candidates passed — that loop just never recorded what it tried. Both now build a `list[ThresholdStepEvent]` (threshold, candidates_passing, accepted) as they loop; `select_greedy`'s return signature grew a 4th element, `SimulatedAnnealer` exposes it as `self.threshold_trace` and `run_to_completion()` grew a 5th return value. Every call site and every existing test that unpacked these tuples needed updating — a real ripple, not just additive.
+
+**TSP as a generator — first attempt was wrong.** Initial version yielded one aggregate event per generation (best/worst/mean score only). Called out directly: that throws away the population diversity the visualization is supposed to show, an aggregate is a regression from "trace" to "summary."
+
+Fixed with a content-addressed walk cache instead of truncating anything. The insight: `_apply_selection` carries tournament-winning survivors forward as the literal same walk, and `_apply_mutation` leaves ~half the population untouched each generation — so most of a generation's "population" is content that already appeared in an earlier generation. `TSPOptimizer` now assigns each distinct track ordering an incrementing `walk_id` the first time it's seen (`generation=0` = initial random population included), writes a `TSPWalkEvent(walk_id, track_ids)` once per distinct ordering ever, and a `TSPGenerationEvent(generation, members=[{walk_id, score}, ...])` once per generation with the *entire* population, every member, referencing walks by id instead of repeating track ids. Full diversity, no 80% cutoff, affordable because the expensive payload (track ids) is deduplicated by content rather than repeated per generation.
+
+Verified the cache is doing real work, not just correct: a real run (n=10, generations=50, population_size=20) produced 334 `tsp_walk` events against 1020 total population slots across 51 generation events (generation 0 + 50 evolved) — 32.7% cache-miss rate, meaning two-thirds of every generation's population was already-known content reused from an earlier generation.
+
+`order_by_tsp` kept its existing 3-tuple return signature (unaffected callers: `build_genre_playlist_tsp`, all of `test_tsp.py`) by becoming a thin wrapper that constructs a `TSPOptimizer` and drains `run_to_completion()`, discarding the trace. Only `build_playlist_from_seed` was changed to use `TSPOptimizer` directly and write both event types.
+
+**HTTP exposure**: `GET /runs/{run_id}` (`src/app.py`), backed by `read_run_trace()` in `persistence.py`. Returns the JSONL file verbatim as `application/x-ndjson`, not re-parsed into a JSON array — matches the on-disk format exactly in case a future version streams a run's lines while it's still in progress. Guards against path traversal (`run_id` becomes part of a file path): resolves the path and rejects anything that would land outside `runs_dir`, tested with `../secret`, `../../etc/passwd`, and an embedded `/`.
+
+Verified against a running server, not just TestClient: started uvicorn for real, `POST /me/playlists/seed/{track_id}?strategy=sa` against a live gospel seed, then `GET /runs/{run_id}` against that same server — 1446 real lines, every stage present (1 seed, 58 candidate, 1 threshold_step, 1000 sa_iteration, 334 tsp_walk, 51 tsp_generation, 1 final), inspected line by line. Left the resulting `runs/{run_id}.jsonl` on disk this time instead of cleaning it up, so it can be opened and inspected directly.
+
+16 new/updated tests: `ThresholdStepEvent` coverage in `test_selection.py`, a new TSPOptimizer section in `test_tsp.py` (generation numbering, full-population-per-generation, walk dedup by content, every population member resolves to an already-written walk_id), `read_run_trace` coverage and a new `test_run_trace_endpoint.py` in `test_persistence.py`/`tests/`.
+
+**Ongoing / Next:** TSP walk lineage (which parent produced which child via crossover/mutation) isn't recorded — only content + score. Would let a frontend animate an actual parent-to-child morph instead of just "this walk_id appeared." Item 6 (the actual web interface) is next.

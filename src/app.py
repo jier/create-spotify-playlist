@@ -1,11 +1,12 @@
 from datetime import date
 from typing import Literal
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from src.algorithms.persistence import read_run_trace
 from src.services import playlist_builder, spotify
 
 LOOPBACK_ADDRESSES = {"127.0.0.1", "::1"}
@@ -130,3 +131,23 @@ def build_chronological_playlist(genre: str, dry_run: bool = True):
 )
 def build_tsp_playlist(genre: str, dry_run: bool = True):
     return playlist_builder.build_genre_playlist_tsp(genre, dry_run=dry_run)
+
+
+@app.get("/runs/{run_id}")
+def get_run_trace(run_id: str):
+    """
+    Serve a persisted run's JSONL trace (src/algorithms/persistence.py) — the
+    seed/candidate/threshold_step/sa_iteration/tsp_walk/tsp_generation/final
+    events the DNA visualization frontend replays. build_playlist_from_seed
+    returns run_id/trace_path; fetch this endpoint with that run_id to get
+    the actual content, since a browser can't read the local runs/ file
+    directly.
+
+    Returned as raw JSONL text (one JSON object per line), matching the
+    on-disk format exactly rather than re-parsing into a JSON array.
+    """
+    try:
+        content = read_run_trace(run_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return PlainTextResponse(content, media_type="application/x-ndjson")

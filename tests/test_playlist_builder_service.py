@@ -345,13 +345,14 @@ def test_run_selection_strategy_dispatches_to_greedy(fake_playlist_spotify):
     candidate_features = [["t1", {"genres": {"rock"}, "release_year": 2000}]]
     candidate_tracks = {"t1": {"artists": [{"id": "artist_1"}]}}
 
-    top_n, fallback, _, trace = service._run_selection_strategy(
+    top_n, fallback, _, trace, threshold_trace = service._run_selection_strategy(
         "greedy", candidate_features, seed_feat, candidate_tracks, n=1, weights=DistanceWeights()
     )
 
     assert len(top_n) == 1
     assert fallback == "genre_search"
     assert trace == []
+    assert len(threshold_trace) == 1
 
 
 def test_run_selection_strategy_dispatches_to_sa(fake_playlist_spotify, monkeypatch):
@@ -361,13 +362,14 @@ def test_run_selection_strategy_dispatches_to_sa(fake_playlist_spotify, monkeypa
     candidate_features = [[f"t{i}", {"genres": {"rock"}, "release_year": 2000 + i}] for i in range(10)]
     candidate_tracks = {f"t{i}": {"artists": [{"id": f"artist_{i}"}]} for i in range(10)}
 
-    top_n, fallback, _, trace = service._run_selection_strategy(
+    top_n, fallback, _, trace, threshold_trace = service._run_selection_strategy(
         "sa", candidate_features, seed_feat, candidate_tracks, n=4, weights=DistanceWeights()
     )
 
     assert len(top_n) == 4
     assert fallback.startswith("sa_")
     assert len(trace) == 10
+    assert len(threshold_trace) == 1
 
 
 # ---------------------------------------------------------------------------

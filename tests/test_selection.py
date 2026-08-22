@@ -1,6 +1,12 @@
 import pytest
 
-from src.algorithms.models import DistanceWeights, GreedySelectionConfig, SAIterationEvent, SimulatedAnnealingConfig
+from src.algorithms.models import (
+    DistanceWeights,
+    GreedySelectionConfig,
+    SAIterationEvent,
+    SimulatedAnnealingConfig,
+    ThresholdStepEvent,
+)
 from src.algorithms.selection import SimulatedAnnealer, _energy, select_greedy
 
 
@@ -15,7 +21,7 @@ def test_select_greedy_enforces_per_artist_cap(rock_seed_feat):
         "artist_b_track_0": {"artists": [{"id": "artist_b"}]},
     }
 
-    top_n, fallback, threshold_used = select_greedy(
+    top_n, fallback, threshold_used, threshold_trace = select_greedy(
         candidate_features, rock_seed_feat, candidate_tracks, n=3, config=config
     )
 
@@ -24,6 +30,7 @@ def test_select_greedy_enforces_per_artist_cap(rock_seed_feat):
     assert artist_a_count <= 2
     assert fallback == "genre_search"
     assert threshold_used == 0.75
+    assert threshold_trace == [ThresholdStepEvent(threshold=0.75, candidates_passing=5, accepted=True)]
 
 
 def test_select_greedy_relaxes_threshold_when_seed_genre_has_no_close_match():
@@ -33,11 +40,18 @@ def test_select_greedy_relaxes_threshold_when_seed_genre_has_no_close_match():
     candidate_features = [["off_genre_track", {"genres": {"jazz"}, "release_year": 2000}]]
     candidate_tracks = {"off_genre_track": {"artists": [{"id": "artist_x"}]}}
 
-    top_n, fallback, threshold_used = select_greedy(candidate_features, seed_feat, candidate_tracks, n=1, config=config)
+    top_n, fallback, threshold_used, threshold_trace = select_greedy(
+        candidate_features, seed_feat, candidate_tracks, n=1, config=config
+    )
 
     assert len(top_n) == 1
     assert threshold_used == 1.0
     assert fallback == "relaxed_threshold_1.0"
+    # jazz vs metal never passes the Jaccard threshold until it's fully relaxed to 1.0 —
+    # one rejected step per threshold tried before the final accepted one.
+    assert [step.threshold for step in threshold_trace] == [0.75, 0.85, 0.95, 1.0]
+    assert [step.accepted for step in threshold_trace] == [False, False, False, True]
+    assert [step.candidates_passing for step in threshold_trace] == [0, 0, 0, 1]
 
 
 # ---------------------------------------------------------------------------
@@ -106,11 +120,19 @@ def test_simulated_annealer_run_to_completion_matches_sa_all_candidates_shortcut
     candidate_features, _ = rock_candidate_pool(pool_size)
     annealer = SimulatedAnnealer(SimulatedAnnealingConfig(iterations=30), candidate_features, rock_seed_feat, n=5)
 
-    top_n, fallback, _, trace = annealer.run_to_completion()
+    top_n, fallback, _, trace, threshold_trace = annealer.run_to_completion()
 
     assert len(top_n) == pool_size
     assert fallback == "sa_all_candidates"
     assert trace == []
+    # pool_size == n (5): the very first threshold already has enough candidates, one step.
+    # pool_size < n (3): no threshold ever reaches n candidates (only 3 exist total), all
+    # 4 progression steps run and are recorded as not-accepted, the shortcut triggers after.
+    if pool_size >= 5:
+        assert threshold_trace == [ThresholdStepEvent(threshold=0.75, candidates_passing=pool_size, accepted=True)]
+    else:
+        assert [step.accepted for step in threshold_trace] == [False, False, False, False]
+        assert all(step.candidates_passing == pool_size for step in threshold_trace)
 
 
 def test_simulated_annealer_run_yields_one_event_per_iteration(rock_candidate_pool, rock_seed_feat):
@@ -130,7 +152,7 @@ def test_simulated_annealer_run_to_completion_returns_n_distinct_tracks_and_full
     candidate_features, candidate_tracks = rock_candidate_pool(10)
     annealer = SimulatedAnnealer(SimulatedAnnealingConfig(iterations=10), candidate_features, rock_seed_feat, n=4)
 
-    top_n, _, _, trace = annealer.run_to_completion()
+    top_n, _, _, trace, _ = annealer.run_to_completion()
 
     ids = [tid for tid, _ in top_n]
     assert len(ids) == 4
@@ -160,9 +182,12 @@ def test_simulated_annealer_relaxes_threshold_when_seed_genre_has_no_close_match
     candidate_features = [["off_genre_track", {"genres": {"jazz"}, "release_year": 2000}]]
     annealer = SimulatedAnnealer(SimulatedAnnealingConfig(iterations=30), candidate_features, seed_feat, n=1)
 
-    top_n, fallback, threshold_used, trace = annealer.run_to_completion()
+    top_n, fallback, threshold_used, trace, threshold_trace = annealer.run_to_completion()
 
     assert len(top_n) == 1
     assert threshold_used == 1.0
     assert fallback == "sa_all_candidates"
     assert trace == []
+    assert [step.threshold for step in threshold_trace] == [0.75, 0.85, 0.95, 1.0]
+    assert [step.accepted for step in threshold_trace] == [False, False, False, True]
+    assert [step.candidates_passing for step in threshold_trace] == [0, 0, 0, 1]

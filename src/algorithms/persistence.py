@@ -3,30 +3,40 @@ JSONL persistence for a single playlist-build run — the data the DNA
 visualization will replay.
 
 One file per run at runs/{run_id}.jsonl, one JSON object per line, each
-tagged with a "stage" field: seed, candidate, sa_iteration, final.
+tagged with a "stage" field: seed, candidate, threshold_step, sa_iteration,
+tsp_walk, tsp_generation, final.
 
-Honest scope of what this currently captures, so it isn't oversold:
+Captures, per stage:
   - seed: written once, the track the run started from.
   - candidate: the full candidate pool considered, whether selected or not.
+  - threshold_step: one line per Jaccard threshold tried while relaxing to
+    find enough candidates. Written for both greedy and SA (each has its
+    own threshold-relaxation loop), and for both the main selection attempt
+    and the discography fallback re-run, if it happens.
   - sa_iteration: one line per SimulatedAnnealer iteration. Only present
     when strategy="sa" — greedy selection has no iteration trace to write.
+  - tsp_walk: one line per distinct track ordering TSPOptimizer ever produces,
+    written the first time it's seen. Full population every generation is
+    affordable because of this cache — see TSPOptimizer's docstring.
+  - tsp_generation: one line per TSPOptimizer generation, the full population
+    (every member), each referencing a tsp_walk by walk_id rather than
+    repeating its track ids.
   - final: the ordered playlist the run produced.
-
-Not yet captured (real gaps, not silently skipped):
-  - threshold relaxation steps inside select_greedy / the discography
-    fallback path — those decisions aren't emitted as events yet.
-  - per-generation TSP trace — order_by_tsp returns only
-    (ordered_ids, final_score, initial_score), it doesn't yield
-    intermediate generations, so there is nothing to write per-generation
-    yet. Would need order_by_tsp turned into a generator, mirroring what
-    SimulatedAnnealer.run() already does.
 """
 
 from pathlib import Path
 
 from pydantic import BaseModel
 
-from src.algorithms.models import CandidateTraceEvent, FinalTraceEvent, SAIterationEvent, SeedTraceEvent
+from src.algorithms.models import (
+    CandidateTraceEvent,
+    FinalTraceEvent,
+    SAIterationEvent,
+    SeedTraceEvent,
+    ThresholdStepEvent,
+    TSPGenerationEvent,
+    TSPWalkEvent,
+)
 
 
 class RunTraceWriter:
@@ -61,7 +71,16 @@ class RunTraceWriter:
                 )
             )
 
+    def write_threshold_step(self, event: ThresholdStepEvent) -> None:
+        self._write_line(event)
+
     def write_sa_iteration(self, event: SAIterationEvent) -> None:
+        self._write_line(event)
+
+    def write_tsp_walk(self, event: TSPWalkEvent) -> None:
+        self._write_line(event)
+
+    def write_tsp_generation(self, event: TSPGenerationEvent) -> None:
         self._write_line(event)
 
     def write_final(self, track_ids: list[str], tsp_score: float, initial_score: float) -> None:
@@ -74,3 +93,25 @@ class RunTraceWriter:
                 improvement_pct=improvement_pct,
             )
         )
+
+
+def read_run_trace(run_id: str, runs_dir: Path | str = "runs") -> str:
+    """
+    Read the raw JSONL content a RunTraceWriter wrote for run_id.
+
+    Returns the file verbatim (one JSON object per line) rather than parsing
+    it into a Python list, matching the on-disk format 1:1 — useful if a
+    future version streams lines while a run is still in progress instead of
+    only serving completed runs.
+
+    Raises FileNotFoundError if no trace exists for run_id. Raises ValueError
+    if run_id would resolve outside runs_dir (defensive against path
+    traversal, since run_id is caller-supplied and becomes part of a file path).
+    """
+    base = Path(runs_dir).resolve()
+    path = (base / f"{run_id}.jsonl").resolve()
+    if path.parent != base:
+        raise ValueError(f"Invalid run_id: {run_id!r}")
+    if not path.exists():
+        raise FileNotFoundError(f"No run trace for run_id={run_id!r}")
+    return path.read_text()

@@ -1,7 +1,15 @@
 import json
 
-from src.algorithms.models import SAIterationEvent
-from src.algorithms.persistence import RunTraceWriter
+import pytest
+
+from src.algorithms.models import (
+    SAIterationEvent,
+    ThresholdStepEvent,
+    TSPGenerationEvent,
+    TSPPopulationMember,
+    TSPWalkEvent,
+)
+from src.algorithms.persistence import RunTraceWriter, read_run_trace
 
 
 def _read_lines(writer: RunTraceWriter) -> list[dict]:
@@ -103,6 +111,45 @@ def test_write_sa_iteration_writes_the_event_with_stage(tmp_path):
     ]
 
 
+def test_write_threshold_step_writes_the_event_with_stage(tmp_path):
+    writer = RunTraceWriter("run_1", runs_dir=tmp_path)
+    event = ThresholdStepEvent(threshold=0.85, candidates_passing=7, accepted=True)
+
+    writer.write_threshold_step(event)
+
+    lines = _read_lines(writer)
+    assert lines == [{"stage": "threshold_step", "threshold": 0.85, "candidates_passing": 7, "accepted": True}]
+
+
+def test_write_tsp_walk_writes_the_event_with_stage(tmp_path):
+    writer = RunTraceWriter("run_1", runs_dir=tmp_path)
+    event = TSPWalkEvent(walk_id=3, track_ids=["t1", "t2", "t3"])
+
+    writer.write_tsp_walk(event)
+
+    lines = _read_lines(writer)
+    assert lines == [{"stage": "tsp_walk", "walk_id": 3, "track_ids": ["t1", "t2", "t3"]}]
+
+
+def test_write_tsp_generation_writes_the_full_population_nested(tmp_path):
+    writer = RunTraceWriter("run_1", runs_dir=tmp_path)
+    event = TSPGenerationEvent(
+        generation=2,
+        members=[TSPPopulationMember(walk_id=0, score=1.5), TSPPopulationMember(walk_id=1, score=2.5)],
+    )
+
+    writer.write_tsp_generation(event)
+
+    lines = _read_lines(writer)
+    assert lines == [
+        {
+            "stage": "tsp_generation",
+            "generation": 2,
+            "members": [{"walk_id": 0, "score": 1.5}, {"walk_id": 1, "score": 2.5}],
+        }
+    ]
+
+
 def test_write_final_computes_improvement_pct(tmp_path):
     writer = RunTraceWriter("run_1", runs_dir=tmp_path)
 
@@ -149,3 +196,30 @@ def test_two_writers_with_different_run_ids_produce_separate_files(tmp_path):
 
     assert _read_lines(writer_a) == [{"stage": "seed", "track_id": "seed_a", "genres": ["rock"], "release_year": 2000}]
     assert _read_lines(writer_b) == [{"stage": "seed", "track_id": "seed_b", "genres": ["blues"], "release_year": 1990}]
+
+
+# ---------------------------------------------------------------------------
+# read_run_trace
+# ---------------------------------------------------------------------------
+
+
+def test_read_run_trace_returns_file_content_verbatim(tmp_path):
+    writer = RunTraceWriter("run_1", runs_dir=tmp_path)
+    writer.write_seed("seed", ["rock"], 2000)
+    writer.write_final(["seed"], tsp_score=0.0, initial_score=0.0)
+
+    content = read_run_trace("run_1", runs_dir=tmp_path)
+
+    assert content == writer.path.read_text()
+    assert [json.loads(line)["stage"] for line in content.splitlines()] == ["seed", "final"]
+
+
+def test_read_run_trace_raises_file_not_found_for_missing_run(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        read_run_trace("does_not_exist", runs_dir=tmp_path)
+
+
+@pytest.mark.parametrize("malicious_run_id", ["../secret", "../../etc/passwd", "sub/dir"])
+def test_read_run_trace_rejects_run_id_that_would_escape_runs_dir(tmp_path, malicious_run_id):
+    with pytest.raises(ValueError):
+        read_run_trace(malicious_run_id, runs_dir=tmp_path)

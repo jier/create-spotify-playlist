@@ -3,10 +3,17 @@ from itertools import islice
 from typing import Literal
 
 from src.algorithms.features import build_track_features
-from src.algorithms.models import DistanceWeights, GreedySelectionConfig, SAIterationEvent, SimulatedAnnealingConfig
+from src.algorithms.models import (
+    DistanceWeights,
+    GreedySelectionConfig,
+    SAIterationEvent,
+    SimulatedAnnealingConfig,
+    ThresholdStepEvent,
+    TSPWalkEvent,
+)
 from src.algorithms.persistence import RunTraceWriter
 from src.algorithms.selection import SimulatedAnnealer, select_greedy
-from src.algorithms.tsp import order_by_tsp
+from src.algorithms.tsp import TSPOptimizer, order_by_tsp
 from src.services.spotifyService import SpotifyService
 from src.settings import settings
 
@@ -103,24 +110,24 @@ class PlaylistBuilderService:
         candidate_tracks: dict[str, dict],
         n: int,
         weights: DistanceWeights,
-    ) -> tuple[list[list], str, float, list[SAIterationEvent]]:
+    ) -> tuple[list[list], str, float, list[SAIterationEvent], list[ThresholdStepEvent]]:
         """
         Dispatch to the configured strategy. Builds each strategy's config from
         settings here, at the orchestration boundary, so the algorithms
         themselves never read settings directly.
 
-        Returns (top_n, fallback, threshold_used, sa_trace). sa_trace is empty
-        for the greedy strategy, and for the "sa_all_candidates" SA shortcut
-        (pool already <= n, nothing to anneal).
+        Returns (top_n, fallback, threshold_used, sa_trace, threshold_trace).
+        sa_trace is empty for the greedy strategy, and for the
+        "sa_all_candidates" SA shortcut (pool already <= n, nothing to anneal).
         """
         if strategy == "sa":
             annealer = SimulatedAnnealer(self._sa_config(weights), candidate_features, seed_feat, n)
             return annealer.run_to_completion()
 
-        top_n, fallback, threshold_used = select_greedy(
+        top_n, fallback, threshold_used, threshold_trace = select_greedy(
             candidate_features, seed_feat, candidate_tracks, n, self._greedy_config(weights)
         )
-        return top_n, fallback, threshold_used, []
+        return top_n, fallback, threshold_used, [], threshold_trace
 
     def _fetch_seed_and_genres(self, track_id: str) -> tuple[dict, str, str, set[str], dict[str, set[str]]] | None:
         """
@@ -369,9 +376,11 @@ class PlaylistBuilderService:
         sa_trace: list[SAIterationEvent] = []
 
         if candidate_features:
-            top_n, fallback, threshold_used, sa_trace = self._run_selection_strategy(
+            top_n, fallback, threshold_used, sa_trace, threshold_trace = self._run_selection_strategy(
                 strategy, candidate_features, seed_feat, candidate_tracks, n, weights
             )
+            for step in threshold_trace:
+                writer.write_threshold_step(step)
             for event in sa_trace:
                 writer.write_sa_iteration(event)
 
@@ -380,9 +389,11 @@ class PlaylistBuilderService:
             disc_features = self._apply_discography_fallback(seed_artist_id, track_id, candidate_tracks, artist_genres)
             if disc_features:
                 all_built_features += disc_features
-                top_n, _, _, sa_trace = self._run_selection_strategy(
+                top_n, _, _, sa_trace, threshold_trace = self._run_selection_strategy(
                     strategy, candidate_features + disc_features, seed_feat, candidate_tracks, n, weights
                 )
+                for step in threshold_trace:
+                    writer.write_threshold_step(step)
                 for event in sa_trace:
                     writer.write_sa_iteration(event)
                 fallback = "artist_discography"
@@ -404,7 +415,12 @@ class PlaylistBuilderService:
         tsp_score = 0.0
         initial_score = 0.0
         if len(top_n) >= 3:
-            ordered_ids, tsp_score, initial_score = order_by_tsp(top_n, weights)
+            ordered_ids, tsp_score, initial_score, tsp_trace = TSPOptimizer(top_n, weights).run_to_completion()
+            for event in tsp_trace:
+                if isinstance(event, TSPWalkEvent):
+                    writer.write_tsp_walk(event)
+                else:
+                    writer.write_tsp_generation(event)
         else:
             ordered_ids = [f[0] for f in top_n]
 
