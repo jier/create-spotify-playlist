@@ -7,7 +7,7 @@ from itertools import islice
 import requests
 from fastapi import HTTPException
 
-from ..settings import settings
+from src.settings import settings
 
 
 class SpotifyService:

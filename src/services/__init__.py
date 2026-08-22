@@ -1,6 +1,6 @@
-from ..settings import settings
-from .playlistBuilderService import PlaylistBuilderService
-from .spotifyService import SpotifyService
+from src.services.playlistBuilderService import PlaylistBuilderService
+from src.services.spotifyService import SpotifyService
+from src.settings import settings
 
 spotify = SpotifyService(
     client_id=settings.spotify_client_id,

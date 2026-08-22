@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .services import playlist_builder, spotify
+from src.services import playlist_builder, spotify
 
 LOOPBACK_ADDRESSES = {"127.0.0.1", "::1"}
 
