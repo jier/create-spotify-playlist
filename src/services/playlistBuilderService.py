@@ -1,8 +1,10 @@
+import uuid
 from itertools import islice
 from typing import Literal
 
 from src.algorithms.features import build_track_features
 from src.algorithms.models import DistanceWeights, GreedySelectionConfig, SAIterationEvent, SimulatedAnnealingConfig
+from src.algorithms.persistence import RunTraceWriter
 from src.algorithms.selection import SimulatedAnnealer, select_greedy
 from src.algorithms.tsp import order_by_tsp
 from src.services.spotifyService import SpotifyService
@@ -309,6 +311,7 @@ class PlaylistBuilderService:
         n: int = 20,
         dry_run: bool = True,
         strategy: Literal["greedy", "sa"] = "greedy",
+        run_id: str | None = None,
     ) -> dict:
         """
         Build a playlist seeded from one track using genre-based Spotify search.
@@ -324,11 +327,18 @@ class PlaylistBuilderService:
           5. Select top n via pluggable strategy (../algorithms/selection.py):
                greedy — artist-capped walk in distance order, progressive Jaccard threshold relaxation
                sa     — simulated annealing: minimises avg_relevance − β × avg_pairwise_diversity,
-                        returns a full per-iteration trace (captured, not yet persisted)
+                        returns a full per-iteration trace
              Discography fallback if strategy returns < n (niche/untagged artist)
           6. Run TSP on top n for smooth internal ordering (../algorithms/tsp.py)
           7. Prepend seed track → create playlist or return dry run stats
+
+        Every call writes a JSONL trace to runs/{run_id}.jsonl (see
+        ../algorithms/persistence.py for exactly what stages are captured —
+        sa_iteration lines only exist when strategy="sa", threshold_step and
+        tsp_generation are not implemented yet).
         """
+        run_id = run_id or uuid.uuid4().hex
+        writer = RunTraceWriter(run_id)
         # Step 1 — seed track + primary artist genres
         fetched = self._fetch_seed_and_genres(track_id)
         if fetched is None:
@@ -346,6 +356,7 @@ class PlaylistBuilderService:
         if not seed_features:
             return {"error": "Could not build features for seed track"}
         seed_feat = seed_features[0]
+        writer.write_seed(track_id, sorted(seed_feat[1]["genres"]), seed_feat[1]["release_year"])
 
         candidate_features = build_track_features(list(candidate_tracks.values()), artist_genres)
         all_built_features = seed_features + candidate_features
@@ -361,6 +372,8 @@ class PlaylistBuilderService:
             top_n, fallback, threshold_used, sa_trace = self._run_selection_strategy(
                 strategy, candidate_features, seed_feat, candidate_tracks, n, weights
             )
+            for event in sa_trace:
+                writer.write_sa_iteration(event)
 
         # Discography fallback — strategy-agnostic, triggers when pool is too small
         if len(top_n) < n:
@@ -370,8 +383,14 @@ class PlaylistBuilderService:
                 top_n, _, _, sa_trace = self._run_selection_strategy(
                     strategy, candidate_features + disc_features, seed_feat, candidate_tracks, n, weights
                 )
+                for event in sa_trace:
+                    writer.write_sa_iteration(event)
                 fallback = "artist_discography"
                 threshold_used = 1.0
+
+        # candidate_tracks may have grown via the discography fallback (mutated in
+        # place) — write it after both attempts so the trace reflects the full pool.
+        writer.write_candidates(candidate_tracks, all_built_features[len(seed_features) :])
 
         if not top_n:
             return {
@@ -391,9 +410,7 @@ class PlaylistBuilderService:
 
         # Step 7 — prepend seed, assemble the response
         final_ids = [track_id] + [tid for tid in ordered_ids if tid != track_id]
-
-        # sa_trace (list[SAIterationEvent]) is captured above but has no sink yet —
-        # the upcoming DNA persistence work (JSONL per run) will write it out.
+        writer.write_final(final_ids, tsp_score, initial_score)
 
         result = self._assemble_seed_playlist_result(
             dry_run=dry_run,
@@ -410,6 +427,8 @@ class PlaylistBuilderService:
             all_built_features=all_built_features,
             track_id=track_id,
         )
+        result["run_id"] = run_id
+        result["trace_path"] = str(writer.path)
 
         if not dry_run:
             seed_name = seed_track.get("name", track_id)

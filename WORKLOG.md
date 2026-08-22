@@ -393,3 +393,36 @@ Now distance between seed and Mary Mary reflects the true signal (`christian r&b
 **β per request**: expose `sa_diversity_weight` as a query param for per-seed tuning in the meantime.
 
 **Duration distance**: `duration_ms` as third signal — proxy for live vs studio without needing deprecated audio features.
+
+## Phase 13 — Dry Run: `build_playlist_from_seed` Against Real Gospel Variants
+
+First real-catalog run of the extracted `src/algorithms/` package end to end, no mocks. Nine gospel genre variants confirmed against Spotify's actual search index (`genre:gospel`, `traditional gospel`, `southern gospel`, `funk gospel`, `brazilian gospel`, `urban gospel`, `christian gospel`, `worship gospel`, `contemporary gospel`), then each one dry-run through `build_playlist_from_seed`. Script and full writeup live in `examples/gospel_genre_variants.py`.
+
+**Finding: `genre:"..."` search and an artist's actual `genres` tag list are two different things.** Spotify's search filter does fuzzy full-text matching against its search index; it is not a lookup into the tag list itself.
+
+- `funk gospel` is a confirmed real artist tag (seen directly on an artist returned by a broader `genre:gospel` search) but a direct `genre:"funk gospel"` search returns zero tracks.
+- `urban gospel` and `christian gospel` searches returned tracks whose artists aren't actually tagged with those genres at all — one had no genres tagged whatsoever. Not a bug in our code, but it usefully exercised the `artist_discography` and `relaxed_threshold_1.0` fallback paths for real, not synthetically.
+
+Clean variants (default 0.75 threshold, no fallback): `gospel`, `traditional gospel`, `southern gospel`, `brazilian gospel`, `contemporary gospel`.
+
+**Ongoing / Next:**
+
+**Frontend visualization idea (parking here so it isn't lost)**: for the lava-lamp-style playlist DNA visualization, pull each track's artist image (Spotify returns this on the artist object we already fetch for genres) and use it inside the blob/particle representing that track, so a viewer can visually see which artists are actually in the mix as the SA trace animates, not just abstract color/energy blobs.
+
+## Phase 14 — JSONL Persistence for the SA Trace (DNA Visualization Data Source)
+
+Called out directly: the Phase 13 dry run tested search/selection/fallback correctness, it did not produce any visualization data — `sa_trace` was computed in `build_playlist_from_seed` and then discarded, no sink existed. Built the actual sink.
+
+`src/algorithms/persistence.py` — `RunTraceWriter(run_id, runs_dir="runs")`. One file per run at `runs/{run_id}.jsonl`, one JSON object per line, four methods: `write_seed`, `write_candidates`, `write_sa_iteration`, `write_final`. Three new Pydantic models in `models.py` (`SeedTraceEvent`, `CandidateTraceEvent`, `FinalTraceEvent`) alongside the existing `SAIterationEvent`, which was missing a `stage` field entirely — caught this by actually reading the file back and hitting a `KeyError: 'stage'` on line one, not by review.
+
+Wired into `build_playlist_from_seed`: generates a `run_id` (uuid4 hex, or accepts one), writes seed once, sa_iteration per SA loop iteration (both the main selection attempt and the discography fallback re-run, if it happens), candidates once after both attempts (`candidate_tracks` is mutated in place by the discography fallback, so writing after captures the full final pool), final once. Response now carries `run_id` and `trace_path`.
+
+Verified against a real run, not just unit tests: `genre:gospel` seed, `strategy="sa"`, n=10 → 1060 real lines (1 seed, 58 candidate, 1000 sa_iteration, 1 final), read back and inspected line by line.
+
+9 new tests in `tests/test_persistence.py` — the module was untested before this, now every method plus the zero-initial-score guard and multi-writer isolation are covered directly, not just indirectly through `build_playlist_from_seed`.
+
+**Ongoing / Next:**
+
+**Not yet captured, real gaps not silently skipped**: threshold-relaxation steps inside `select_greedy` / the discography fallback path aren't emitted as events. Per-generation TSP trace doesn't exist — `order_by_tsp` returns only `(ordered_ids, final_score, initial_score)`, would need turning into a generator the same way `SimulatedAnnealer.run()` already is.
+
+**HTTP exposure**: nothing serves a run's JSONL file over HTTP yet. Needed before the item 6 web interface can consume it from a browser instead of reading the local file directly.

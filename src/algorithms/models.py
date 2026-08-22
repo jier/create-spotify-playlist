@@ -39,11 +39,43 @@ class SimulatedAnnealingConfig(BaseModel):
 
 
 class SAIterationEvent(BaseModel):
-    """One simulated annealing iteration. One JSONL line once persistence is added."""
+    """One simulated annealing iteration. Written as one JSONL line by RunTraceWriter."""
 
+    stage: str = "sa_iteration"
     iteration: int
     temperature: float
     energy: float
     accepted: bool
     out_track_id: str
     in_track_id: str
+
+
+class SeedTraceEvent(BaseModel):
+    """The seed track a run started from. First line of every run's JSONL file."""
+
+    stage: str = "seed"
+    track_id: str
+    genres: list[str]
+    release_year: int
+
+
+class CandidateTraceEvent(BaseModel):
+    """One candidate considered for the playlist, whether or not it was selected."""
+
+    stage: str = "candidate"
+    track_id: str
+    name: str
+    artist_name: str
+    artist_id: str | None
+    genres: list[str]
+    release_year: int
+
+
+class FinalTraceEvent(BaseModel):
+    """The final ordered playlist a run produced. Last line of every run's JSONL file."""
+
+    stage: str = "final"
+    track_ids: list[str]
+    tsp_score: float
+    initial_score: float
+    improvement_pct: float
