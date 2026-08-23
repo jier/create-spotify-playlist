@@ -28,3 +28,10 @@ generate-ts-models:
 .PHONY: web-typecheck
 web-typecheck:
 	cd web && npx tsc --noEmit
+
+.PHONY: web-test
+web-test:
+	cd web && npm test
+
+.PHONY: web-check
+web-check: web-typecheck web-test

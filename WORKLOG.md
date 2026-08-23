@@ -496,3 +496,19 @@ Verified against a real backend-produced trace, not a fixture: `web/scripts/veri
 `web/` is its own npm package (zod runtime dep; typescript 7.0.2 + tsx dev deps — TS 7 is real, confirmed by what npm actually resolved, not assumed), strict `tsconfig`, no frontend framework. `make generate-ts-models` and `make web-typecheck` added.
 
 **Ongoing / Next:** no actual UI or rendering code exists yet — this phase was the data/type layer only. Next: the event-log -> view-model projector (resolving `walk_id` references, building a playback timeline), then the Canvas renderer itself.
+
+## Phase 18 — Event-Log -> View-Model Projector
+
+`web/src/projector.ts`, `buildViewModel(events) -> PlaylistDNAViewModel`. Pure, no DOM/Canvas — the "reducer" half of the split from Phase 17 (a future renderer only ever touches this output, never `TraceEvent` directly).
+
+Two things this is more than a relabel of the trace:
+
+**Resolves `tsp_walk`/`tsp_generation` references.** Straightforward — the backend already guarantees a walk's `TSPWalkEvent` appears before any generation event that references it (verified back in Phase 16), so a single forward pass builds a `Map<walk_id, TSPWalk>` and resolves each generation's members against it, throwing if a reference is ever unresolved (this is a real invariant check, not defensive noise — if it ever fires, the backend's ordering guarantee broke).
+
+**Reconstructs the SA-selected track set at every iteration — the harder one.** A `sa_iteration` event only records what swapped (`out_track_id` -> `in_track_id`), never the full selection at that point. The only anchor available anywhere in the trace is the *final* result. Realized this is soundly reconstructable, not guesswork: TSP only reorders the SA-selected set, it never changes membership, and the seed is prepended afterward, entirely outside the SA selection. So `final.track_ids` minus the seed is exactly what the SA converged to — walking the iteration list backward from there, undoing each *accepted* swap in reverse, recovers the exact selection after every iteration, all the way back to the true initial random selection before iteration 0.
+
+Real complication caught before it became a silent bug: if the discography fallback triggers, the trace can contain a *second*, independent anneal over a larger candidate pool — and its `sa_iteration` events restart from iteration 0. Naively treating the whole `sa_iteration` stream as one continuous sequence would silently corrupt the backward reconstruction for that case (undoing swaps from an abandoned first attempt as if they were part of the real one). `splitIntoSAEpisodes` detects the restart (iteration failing to strictly increase is only possible at an episode boundary, since `SimulatedAnnealer.run()` always increments by exactly 1) and only reconstructs the *last* episode — the one actually anchored to the final result. Earlier, abandoned episodes are still exposed (iteration/temperature/energy/swap), just without a selection trajectory, since there's nothing sound to anchor one to.
+
+15 tests in `web/src/projector.test.ts` (Node's built-in `node:test`, zero extra test framework dependency): resolution/error-path unit tests, a hand-traced multi-step backward-reconstruction case verified by hand, the episode-split behavior, and — same discipline as the Python side — two tests that run `buildViewModel` against actual `runs/*.jsonl` files produced by a real server, not just synthetic fixtures, checking the reconstructed selection size stays consistent with the final result throughout. `make web-test`/`make web-check` added.
+
+**Ongoing / Next:** the Canvas renderer itself — nothing draws anything yet. The view model is playback-ready; next is turning it into `requestAnimationFrame` frames.
