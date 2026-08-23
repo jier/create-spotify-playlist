@@ -26,35 +26,78 @@
  *      whole time regardless (see stepPhysics's selectedJitterScale),
  *      since the anneal's temperature has nothing to do with candidates
  *      that were never part of the current selection.
- *   3. "final" — highlights the actual final playlist (pulled toward the
+ *   3. "tsp" — only if the trace has any tsp_generation events (present
+ *      for both strategies whenever len(top_n) >= 3, see order_by_tsp).
+ *      Entering this phase prunes down to exactly the final selected set
+ *      (pruneTo) — candidates that were never selected have nothing to do
+ *      with TSP and must not keep sitting around being affected by
+ *      TSP-phase parameters meant only for the selected set, same lesson
+ *      as the jitterScale scoping bug. Each generation's best walk
+ *      (members[0] — already sorted ascending by score, guaranteed by the
+ *      backend's _sort_walks, see tsp.py) gets a "chase": a highlight
+ *      (applyHighlight, a flag kept deliberately separate from `selected`
+ *      — see BlobState.highlighted) steps through its trackIds in order,
+ *      one track at a time, before advancing to the next generation.
+ *      Screen-space blob position is NOT used to represent tour distance
+ *      here — the blobs' 2D positions are physics-simulated drift
+ *      coordinates with no relationship to the actual genre+year distance
+ *      TSP is optimizing, so a shrinking on-screen path would be a
+ *      misleading metaphor. The real tsp_score/improvement is reported
+ *      through onStatusChange instead, as an actual number, not inferred
+ *      from geometry.
+ *   4. "final" — highlights the actual final playlist (pulled toward the
  *      seed the same way) and stays there.
  *
- * Not yet implemented: TSP generation playback (population evolving via
- * parent_walk_ids lineage). This first version only animates the SA
- * selection trajectory and the final result — see WORKLOG.md.
+ * Also reports, every frame, via onStatusChange: SA energy during "sa",
+ * TSP generation/score/improvement during "tsp"; and via onStatsChange:
+ * genre mix / year spread / avg distance from seed (stats.ts) for whatever
+ * track set is currently emphasized; and via onGenerationDiff: which
+ * TSP walk_ids appeared/disappeared this generation (walkLineage.ts),
+ * for a DOM "tree list" view of population turnover.
  */
 
-import type { PlaylistDNAViewModel } from "./projector";
-import { applyAttraction, applySelection, createBlobs, stepPhysics, type BlobSeed, type Blobs } from "./playback";
+import type { CandidateInfo, PlaylistDNAViewModel, SeedInfo, TSPGenerationFrame } from "./projector";
+import {
+  applyAttraction,
+  applyHighlight,
+  applySelection,
+  createBlobs,
+  pruneTo,
+  stepPhysics,
+  type BlobSeed,
+  type Blobs,
+} from "./playback";
+import { computeStats, type DNAStats } from "./stats";
+import { diffGenerations, type GenerationDiff } from "./walkLineage";
 
-export type Phase = "candidates" | "sa" | "final";
+export type Phase = "candidates" | "sa" | "tsp" | "final";
 
 export interface PlaybackStatus {
   phase: Phase;
   saIteration: number;
   saTotal: number;
+  saEnergy: number | null;
+  tspGeneration: number;
+  tspGenerationsTotal: number;
+  tspBestScore: number | null;
+  tspInitialScore: number | null;
 }
 
 export interface RendererOptions {
-  /** How long the candidate intro phase lasts before SA playback (or final, if no SA trace) starts. */
+  /** How long the candidate intro phase lasts before SA playback (or TSP/final, if no SA trace) starts. */
   candidateIntroMs?: number;
   /** Milliseconds of simulated time per SA iteration advanced. Lower = faster playback. */
   msPerIteration?: number;
+  /** Milliseconds of simulated time each TSP generation's chase gets, split evenly across its walk's tracks. */
+  msPerGeneration?: number;
   onStatusChange?: (status: PlaybackStatus) => void;
+  onStatsChange?: (stats: DNAStats) => void;
+  onGenerationDiff?: (diff: GenerationDiff) => void;
 }
 
 const DEFAULT_CANDIDATE_INTRO_MS = 2000;
 const DEFAULT_MS_PER_ITERATION = 15;
+const DEFAULT_MS_PER_GENERATION = 800;
 /** Fraction of the remaining gap to the seed a selected blob closes per second. */
 const ATTRACTION_STRENGTH = 1.5;
 /** Floor for the temperature-derived jitter scale — never fully freeze, that reads as broken, not converged. */
@@ -67,13 +110,21 @@ export class Renderer {
   private readonly viewModel: PlaylistDNAViewModel;
   private readonly candidateIntroMs: number;
   private readonly msPerIteration: number;
+  private readonly msPerGeneration: number;
   private readonly onStatusChange: RendererOptions["onStatusChange"];
+  private readonly onStatsChange: RendererOptions["onStatsChange"];
+  private readonly onGenerationDiff: RendererOptions["onGenerationDiff"];
+  /** Precomputed once — diffGenerations takes the whole array, no reason to recompute it every frame. */
+  private readonly generationDiffs: GenerationDiff[];
 
   private blobs: Blobs;
   private phase: Phase = "candidates";
   private phaseElapsedMs = 0;
   private saIterationIndex = -1;
   private saAccumulatorMs = 0;
+  private tspGenerationIndex = -1;
+  private tspChaseIndex = -1;
+  private tspChaseAccumulatorMs = 0;
 
   private playing = false;
   private rafHandle: number | null = null;
@@ -90,7 +141,11 @@ export class Renderer {
     this.viewModel = viewModel;
     this.candidateIntroMs = options.candidateIntroMs ?? DEFAULT_CANDIDATE_INTRO_MS;
     this.msPerIteration = options.msPerIteration ?? DEFAULT_MS_PER_ITERATION;
+    this.msPerGeneration = options.msPerGeneration ?? DEFAULT_MS_PER_GENERATION;
     this.onStatusChange = options.onStatusChange;
+    this.onStatsChange = options.onStatsChange;
+    this.onGenerationDiff = options.onGenerationDiff;
+    this.generationDiffs = diffGenerations(viewModel.tspGenerations);
 
     const entries: BlobSeed[] = [
       { id: viewModel.seed.trackId, genres: viewModel.seed.genres },
@@ -98,6 +153,7 @@ export class Renderer {
     ];
     this.blobs = createBlobs(entries, this.width, this.height);
     this.draw();
+    this.reportStats([]);
   }
 
   start(): void {
@@ -144,11 +200,14 @@ export class Renderer {
       case "candidates":
         this.phaseElapsedMs += dtMs;
         if (this.phaseElapsedMs >= this.candidateIntroMs) {
-          this.enterSAPhaseOrSkipToFinal();
+          this.enterSAPhaseOrSkipToTSP();
         }
         break;
       case "sa":
         this.advanceSA(dtMs);
+        break;
+      case "tsp":
+        this.advanceTSP(dtMs);
         break;
       case "final":
         break; // final selection already applied, nothing more to advance
@@ -162,10 +221,8 @@ export class Renderer {
    * represents the anneal's temperature, which has nothing to do with
    * candidates that were never selected). Derived from the current SA
    * iteration's temperature (cools from 1.0 toward 0.01 by construction —
-   * see SimulatedAnnealingConfig). Outside the SA phase (candidates intro,
-   * final) there's no temperature to read, so this returns 1 — irrelevant
-   * anyway outside "sa", since nothing is selected during "candidates" and
-   * "final" doesn't call this.
+   * see SimulatedAnnealingConfig). Outside the SA phase there's no
+   * temperature to read, so this returns 1.
    */
   private currentJitterScale(): number {
     if (this.phase !== "sa" || this.saIterationIndex < 0) return 1;
@@ -179,22 +236,23 @@ export class Renderer {
     return episodes.length > 0 ? episodes[episodes.length - 1] : undefined;
   }
 
-  private enterSAPhaseOrSkipToFinal(): void {
+  private enterSAPhaseOrSkipToTSP(): void {
     const episode = this.lastSAEpisode();
     if (!episode || !episode.selectionsAfter || !episode.initialSelection) {
-      this.enterFinalPhase();
+      this.enterTSPPhaseOrSkipToFinal();
       return;
     }
     this.phase = "sa";
     this.saIterationIndex = -1;
     this.saAccumulatorMs = 0;
     this.blobs = applySelection(this.blobs, episode.initialSelection);
+    this.reportStats([...episode.initialSelection]);
   }
 
   private advanceSA(dtMs: number): void {
     const episode = this.lastSAEpisode();
     if (!episode || !episode.selectionsAfter) {
-      this.enterFinalPhase();
+      this.enterTSPPhaseOrSkipToFinal();
       return;
     }
 
@@ -202,17 +260,101 @@ export class Renderer {
     while (this.saAccumulatorMs >= this.msPerIteration && this.saIterationIndex < episode.iterations.length - 1) {
       this.saAccumulatorMs -= this.msPerIteration;
       this.saIterationIndex++;
-      this.blobs = applySelection(this.blobs, episode.selectionsAfter[this.saIterationIndex]!);
+      const selection = episode.selectionsAfter[this.saIterationIndex]!;
+      this.blobs = applySelection(this.blobs, selection);
+      this.reportStats([...selection]);
     }
 
     if (this.saIterationIndex >= episode.iterations.length - 1) {
-      this.enterFinalPhase();
+      this.enterTSPPhaseOrSkipToFinal();
     }
+  }
+
+  /**
+   * Prunes to the fixed final set (TSP never changes membership, only
+   * order) and starts chasing generation 0's best walk. If the trace has
+   * no TSP generations at all (pool was too small for TSP to run, see
+   * build_playlist_from_seed step 6), skips straight to "final".
+   */
+  private enterTSPPhaseOrSkipToFinal(): void {
+    if (this.viewModel.tspGenerations.length === 0) {
+      this.enterFinalPhase();
+      return;
+    }
+
+    this.phase = "tsp";
+    this.tspGenerationIndex = 0;
+    this.tspChaseIndex = -1;
+    this.tspChaseAccumulatorMs = 0;
+
+    const finalIds = new Set(this.viewModel.final.trackIds);
+    this.blobs = pruneTo(this.blobs, finalIds);
+    this.blobs = applySelection(this.blobs, finalIds);
+    this.reportGenerationDiff(0);
+    this.reportBestWalkStats(0);
+  }
+
+  private advanceTSP(dtMs: number): void {
+    const generations = this.viewModel.tspGenerations;
+    const generation: TSPGenerationFrame | undefined = generations[this.tspGenerationIndex];
+    if (!generation) {
+      this.enterFinalPhase();
+      return;
+    }
+
+    // members[0] is already the lowest-score (best) walk in this
+    // generation — guaranteed by the backend sorting the population
+    // before building each TSPGenerationEvent (see TSPOptimizer in tsp.py).
+    const bestWalk = generation.members[0]?.walk;
+    if (!bestWalk || bestWalk.trackIds.length === 0) {
+      this.enterFinalPhase();
+      return;
+    }
+
+    const stepMs = this.msPerGeneration / bestWalk.trackIds.length;
+    this.tspChaseAccumulatorMs += dtMs;
+    while (this.tspChaseAccumulatorMs >= stepMs && this.tspChaseIndex < bestWalk.trackIds.length - 1) {
+      this.tspChaseAccumulatorMs -= stepMs;
+      this.tspChaseIndex++;
+      this.blobs = applyHighlight(this.blobs, bestWalk.trackIds[this.tspChaseIndex] ?? null);
+    }
+
+    if (this.tspChaseIndex >= bestWalk.trackIds.length - 1) {
+      this.tspGenerationIndex++;
+      this.tspChaseIndex = -1;
+      this.tspChaseAccumulatorMs = 0;
+
+      if (this.tspGenerationIndex >= generations.length) {
+        this.blobs = applyHighlight(this.blobs, null);
+        this.enterFinalPhase();
+      } else {
+        this.reportGenerationDiff(this.tspGenerationIndex);
+        this.reportBestWalkStats(this.tspGenerationIndex);
+      }
+    }
+  }
+
+  private reportGenerationDiff(generationIndex: number): void {
+    if (!this.onGenerationDiff) return;
+    const diff = this.generationDiffs[generationIndex];
+    if (diff) this.onGenerationDiff(diff);
+  }
+
+  private reportBestWalkStats(generationIndex: number): void {
+    const bestWalk = this.viewModel.tspGenerations[generationIndex]?.members[0]?.walk;
+    if (bestWalk) this.reportStats(bestWalk.trackIds);
   }
 
   private enterFinalPhase(): void {
     this.phase = "final";
+    this.blobs = applyHighlight(this.blobs, null);
     this.blobs = applySelection(this.blobs, new Set(this.viewModel.final.trackIds));
+    this.reportStats(this.viewModel.final.trackIds);
+  }
+
+  private reportStats(activeTrackIds: readonly string[]): void {
+    if (!this.onStatsChange) return;
+    this.onStatsChange(computeStats(activeTrackIds, this.viewModel.candidates, this.viewModel.seed));
   }
 
   private draw(): void {
@@ -225,7 +367,11 @@ export class Renderer {
       this.ctx.fillStyle = blob.color;
       this.ctx.fill();
 
-      if (blob.id === seedId) {
+      if (blob.highlighted) {
+        this.ctx.lineWidth = 4;
+        this.ctx.strokeStyle = "#ffd93d";
+        this.ctx.stroke();
+      } else if (blob.id === seedId) {
         this.ctx.lineWidth = 3;
         this.ctx.strokeStyle = "white";
         this.ctx.stroke();
@@ -235,11 +381,22 @@ export class Renderer {
 
   private reportStatus(): void {
     if (!this.onStatusChange) return;
-    const episode = this.lastSAEpisode();
+    const saEpisode = this.lastSAEpisode();
+    const saIter = saEpisode?.iterations[this.saIterationIndex];
+    const currentGeneration = this.viewModel.tspGenerations[this.tspGenerationIndex];
+    const bestMember = currentGeneration?.members[0];
+    const firstGeneration = this.viewModel.tspGenerations[0];
+    const initialBestMember = firstGeneration?.members[0];
+
     this.onStatusChange({
       phase: this.phase,
       saIteration: this.saIterationIndex + 1,
-      saTotal: episode?.iterations.length ?? 0,
+      saTotal: saEpisode?.iterations.length ?? 0,
+      saEnergy: saIter?.energy ?? null,
+      tspGeneration: this.tspGenerationIndex + 1,
+      tspGenerationsTotal: this.viewModel.tspGenerations.length,
+      tspBestScore: bestMember?.score ?? null,
+      tspInitialScore: initialBestMember?.score ?? null,
     });
   }
 }

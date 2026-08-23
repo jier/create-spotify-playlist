@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { genreColor } from "./colors";
-import { BASE_RADIUS, SELECTED_RADIUS, applyAttraction, applySelection, createBlobs, stepPhysics } from "./playback";
+import {
+  BASE_RADIUS,
+  SELECTED_RADIUS,
+  applyAttraction,
+  applyHighlight,
+  applySelection,
+  createBlobs,
+  pruneTo,
+  stepPhysics,
+} from "./playback";
 
 /** Deterministic replacement for Math.random: cycles through a fixed sequence. */
 function fixedSequence(values: number[]): () => number {
@@ -214,4 +223,75 @@ test("applyAttraction never mutates the map passed in", () => {
   applyAttraction(blobs, { x: 0, y: 0 }, 5, 1000);
 
   assert.equal(blobs.get("a")!.x, beforeX);
+});
+
+// ---------------------------------------------------------------------------
+// applyHighlight — kept separate from `selected`, only affects the flag
+// ---------------------------------------------------------------------------
+
+test("applyHighlight marks exactly one blob highlighted and clears everyone else", () => {
+  let blobs = createBlobs(
+    [
+      { id: "a", genres: [] },
+      { id: "b", genres: [] },
+    ],
+    800,
+    600,
+    fixedSequence([0.5]),
+  );
+
+  blobs = applyHighlight(blobs, "a");
+  assert.equal(blobs.get("a")!.highlighted, true);
+  assert.equal(blobs.get("b")!.highlighted, false);
+
+  blobs = applyHighlight(blobs, "b");
+  assert.equal(blobs.get("a")!.highlighted, false);
+  assert.equal(blobs.get("b")!.highlighted, true);
+});
+
+test("applyHighlight with null clears every blob's highlight", () => {
+  let blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  blobs = applyHighlight(blobs, "a");
+  blobs = applyHighlight(blobs, null);
+  assert.equal(blobs.get("a")!.highlighted, false);
+});
+
+test("applyHighlight never touches selected/radius — it's a separate concern from applySelection", () => {
+  let blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  blobs = applySelection(blobs, new Set(["a"]));
+  blobs = applyHighlight(blobs, "a");
+
+  assert.equal(blobs.get("a")!.selected, true);
+  assert.equal(blobs.get("a")!.radius, SELECTED_RADIUS);
+  assert.equal(blobs.get("a")!.highlighted, true);
+});
+
+// ---------------------------------------------------------------------------
+// pruneTo
+// ---------------------------------------------------------------------------
+
+test("pruneTo keeps only the requested ids, dropping everything else", () => {
+  const blobs = createBlobs(
+    [
+      { id: "a", genres: [] },
+      { id: "b", genres: [] },
+      { id: "c", genres: [] },
+    ],
+    800,
+    600,
+    fixedSequence([0.5]),
+  );
+
+  const pruned = pruneTo(blobs, new Set(["a", "c"]));
+
+  assert.equal(pruned.size, 2);
+  assert.ok(pruned.has("a"));
+  assert.ok(pruned.has("c"));
+  assert.ok(!pruned.has("b"));
+});
+
+test("pruneTo never mutates the map passed in", () => {
+  const blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  pruneTo(blobs, new Set());
+  assert.equal(blobs.size, 1, "the original map must still have its entry");
 });

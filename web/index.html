@@ -10,6 +10,9 @@
     background: #111;
     color: #eee;
     font-family: system-ui, sans-serif;
+  }
+
+  body {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -41,12 +44,86 @@
     min-height: 1.2em;
   }
 
+  #stage {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+
   #scene {
     background: #111;
     /* The core technique: the SVG gooey/metaball filter applied via CSS
        directly to the canvas element, validated in the throwaway
        prototype before committing to this pipeline. */
     filter: url(#goo);
+  }
+
+  #sidebar {
+    width: 320px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .panel {
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+
+  .panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #888;
+    margin: 0 0 8px 0;
+  }
+
+  #stats-panel dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 10px;
+    margin: 0;
+    font: 13px monospace;
+  }
+
+  #stats-panel dt {
+    color: #888;
+  }
+
+  #genre-mix {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 8px;
+  }
+
+  #genre-mix span {
+    font: 11px monospace;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: #222;
+    border: 1px solid #444;
+  }
+
+  #walk-tree {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 320px;
+    overflow-y: auto;
+    font: 12px monospace;
+  }
+
+  #walk-tree li {
+    padding: 4px 6px;
+    border-bottom: 1px solid #222;
+    opacity: 1;
+    transition: opacity 0.6s ease;
+  }
+
+  #walk-tree li.fading {
+    opacity: 0;
   }
 
   #error-log {
@@ -84,7 +161,28 @@
 </div>
 <div id="status"></div>
 
-<canvas id="scene" width="900" height="600"></canvas>
+<div id="stage">
+  <canvas id="scene" width="900" height="600"></canvas>
+
+  <div id="sidebar">
+    <div id="stats-panel" class="panel">
+      <h2>Playlist DNA</h2>
+      <dl>
+        <dt>Tracks in mix</dt><dd id="stat-track-count">—</dd>
+        <dt>Year spread</dt><dd id="stat-year-spread">—</dd>
+        <dt>Avg. distance from seed</dt><dd id="stat-distance">—</dd>
+        <dt>SA energy</dt><dd id="stat-energy">—</dd>
+        <dt>TSP score</dt><dd id="stat-tsp-score">—</dd>
+      </dl>
+      <div id="genre-mix"></div>
+    </div>
+
+    <div class="panel">
+      <h2>TSP walk population (live)</h2>
+      <ul id="walk-tree"></ul>
+    </div>
+  </div>
+</div>
 
 <pre id="error-log"></pre>
 <script>

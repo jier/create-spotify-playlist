@@ -22,6 +22,19 @@ export interface BlobState {
   radius: number;
   color: string;
   selected: boolean;
+  /**
+   * Deliberately a separate flag from `selected`, not reused for it. During
+   * TSP playback every remaining blob is already `selected` (TSP only
+   * reorders the fixed final set, doesn't change membership) — `selected`
+   * driving both radius and attraction toward the seed, at the same time as
+   * needing to spotlight one specific blob as the "currently being visited
+   * in this walk order" pointer, would mean two unrelated concerns (which
+   * tracks are chosen vs. where the chase animation currently is) fighting
+   * over one field. That's exactly the kind of scoping mistake Phase 22
+   * caught elsewhere (a physics parameter bleeding onto blobs it wasn't
+   * meant to affect) — keeping them separate avoids repeating it here.
+   */
+  highlighted: boolean;
 }
 
 export type Blobs = Map<string, BlobState>;
@@ -54,6 +67,7 @@ export function createBlobs(entries: readonly BlobSeed[], width: number, height:
       radius,
       color: genreColor(entry.genres),
       selected: false,
+      highlighted: false,
     });
   }
   return blobs;
@@ -125,6 +139,38 @@ export function applySelection(blobs: Blobs, selectedIds: ReadonlySet<string>): 
   for (const blob of blobs.values()) {
     const selected = selectedIds.has(blob.id);
     next.set(blob.id, { ...blob, selected, radius: selected ? SELECTED_RADIUS : BASE_RADIUS });
+  }
+  return next;
+}
+
+/**
+ * Marks exactly one blob (or none, if highlightedId is null) as
+ * `highlighted` — the TSP "chase" pointer tracing through the current
+ * generation's best walk order. Purely a draw-time visual flag (see
+ * renderer.ts's draw()); doesn't affect radius or attraction, unlike
+ * `selected` — see BlobState.highlighted's doc comment for why they're
+ * kept separate.
+ */
+export function applyHighlight(blobs: Blobs, highlightedId: string | null): Blobs {
+  const next: Blobs = new Map();
+  for (const blob of blobs.values()) {
+    next.set(blob.id, { ...blob, highlighted: blob.id === highlightedId });
+  }
+  return next;
+}
+
+/**
+ * Keeps only the blobs whose id is in `keepIds`, dropping everything
+ * else. Used entering the TSP phase: TSP only ever reorders the fixed
+ * final selected set, so candidates that were never selected have
+ * nothing to do with it and shouldn't keep sitting on screen unexplained
+ * (or worse, keep being affected by TSP-phase physics parameters that
+ * were never meant to apply to them — the same class of bug as Phase 22).
+ */
+export function pruneTo(blobs: Blobs, keepIds: ReadonlySet<string>): Blobs {
+  const next: Blobs = new Map();
+  for (const blob of blobs.values()) {
+    if (keepIds.has(blob.id)) next.set(blob.id, blob);
   }
   return next;
 }
