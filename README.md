@@ -46,7 +46,7 @@ Query parameters: `n` (track count, default 20), `dry_run` (default true), `stra
 
 Every call to the seed endpoint writes a JSONL trace of the run to `runs/{run_id}.jsonl`: the seed, every candidate considered, every genre-threshold relaxation step, every simulated annealing iteration (`strategy=sa` only), every distinct TSP track ordering with its parent lineage, and the final result. The response includes `run_id` and `trace_path`.
 
-`GET /runs/{run_id}` serves a run's trace back as raw JSONL (`application/x-ndjson`). This is the data source for an in-progress playlist DNA visualization, see `web/` under Development below; there is no user-facing visualization yet.
+`GET /runs/{run_id}` serves a run's trace back as raw JSONL (`application/x-ndjson`). This is the data source for the playlist DNA visualization, see `web/` under Development below.
 
 Traces are not kept forever. `runs/` is pruned automatically on every app startup, deleting anything older than `runs_retention_days` (default 7 days), and on demand via `make clean-runs`.
 
@@ -72,7 +72,20 @@ Run `make lint` for style checks, `make typecheck` for type checks, `make test` 
 
 ### Frontend (`web/`)
 
-`web/` is a separate, in-progress TypeScript package for the playlist DNA visualization — no UI exists yet, this is currently the data layer only. Pure TypeScript/HTML/CSS, no frontend framework. The backend (`src/algorithms/models.py`) is the source of truth for the wire protocol: `make generate-ts-models` (or `uv run python web/scripts/generate_ts_models.py`) compiles those Pydantic models into Zod schemas at `web/src/generated/models.ts` via `pydantic2zod`, so the frontend's types can't silently drift from what the backend actually emits. `web/src/traceEvent.ts` builds the discriminated union over all trace stages and parses/validates a run's JSONL. `web/src/projector.ts` turns a parsed trace into a render-ready view model: resolves `tsp_walk`/`tsp_generation` references, and reconstructs the full SA-selected track set at every iteration by walking the trace backward from the final result (a `sa_iteration` event only records what swapped, not the full selection). `make web-typecheck` type-checks it, `make web-test` runs its tests (including against real `runs/*.jsonl` files, not just fixtures), `make web-check` runs both.
+`web/` is the playlist DNA visualization. Pure TypeScript/HTML/CSS, no frontend framework.
+
+To run it: start the backend (`uv run uvicorn src.app:app --reload`), then in another terminal `cd web && npm run dev` and open the printed `http://localhost:5173` URL. Paste a `run_id` from a `POST /me/playlists/seed/{track_id}` response into the input and click Load, then Play. Vite's dev server proxies `/runs` and `/me` to the backend (`web/vite.config.ts`) so there's no CORS to deal with.
+
+What it currently animates: every candidate drifts in as a blob (color hashed from its genre set), then — for `strategy=sa` runs — steps through the actual simulated annealing trace, growing/highlighting whichever tracks are selected at each iteration, then settles on the final playlist. TSP generation playback (the population of track orderings evolving via parent lineage) isn't built yet.
+
+Pipeline, backend to pixels:
+- `src/algorithms/models.py` is the source of truth for the wire protocol. `make generate-ts-models` compiles it into Zod schemas at `web/src/generated/models.ts` via `pydantic2zod`, so the frontend's types can't silently drift from what the backend actually emits.
+- `web/src/traceEvent.ts` builds the discriminated union over all trace stages and parses/validates a run's JSONL.
+- `web/src/projector.ts` turns a parsed trace into a render-ready view model: resolves `tsp_walk`/`tsp_generation` references, and reconstructs the full SA-selected track set at every iteration by walking the trace backward from the final result (a `sa_iteration` event only records what swapped, not the full selection).
+- `web/src/playback.ts` is the pure blob simulation (position, drift, selection state) the renderer steps forward each frame.
+- `web/src/renderer.ts` drives a `requestAnimationFrame` loop against a `<canvas>`, styled with a CSS `filter: url(#goo)` gooey/metaball effect (an SVG filter defined in `web/index.html`) for the lava-lamp look.
+
+`make web-typecheck` type-checks it, `make web-test` runs its tests (colors/playback/projector logic, plus one committed real-trace fixture, `web/src/fixtures/sample-run.jsonl`), `make web-check` runs both. `npm run build` produces a static production bundle.
 
 ## License
 
