@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { genreColor } from "./colors";
-import { BASE_RADIUS, SELECTED_RADIUS, applySelection, createBlobs, stepPhysics } from "./playback";
+import { BASE_RADIUS, SELECTED_RADIUS, applyAttraction, applySelection, createBlobs, stepPhysics } from "./playback";
 
 /** Deterministic replacement for Math.random: cycles through a fixed sequence. */
 function fixedSequence(values: number[]): () => number {
@@ -114,4 +114,84 @@ test("applySelection grows selected blobs and shrinks deselected ones", () => {
   assert.equal(blobs.get("a")!.radius, BASE_RADIUS);
   assert.equal(blobs.get("b")!.selected, true);
   assert.equal(blobs.get("b")!.radius, SELECTED_RADIUS);
+});
+
+// ---------------------------------------------------------------------------
+// jitterScale — the "settling as temperature cools" behavior
+// ---------------------------------------------------------------------------
+
+test("stepPhysics with jitterScale=0 injects no new randomness (velocity carries over unperturbed)", () => {
+  let blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  const forced = new Map(blobs);
+  forced.set("a", { ...forced.get("a")!, vx: 0.01, vy: -0.005 });
+
+  // random() returns 0.9 here -- if jitterScale actually multiplied it to 0,
+  // the perturbation term must vanish regardless of what random() returns.
+  const next = stepPhysics(forced, 100, 800, 600, fixedSequence([0.9]), 0);
+
+  const blob = next.get("a")!;
+  assert.equal(blob.vx, 0.01);
+  assert.equal(blob.vy, -0.005);
+});
+
+test("stepPhysics with jitterScale=1 (default) does perturb velocity when random() != 0.5", () => {
+  let blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  const forced = new Map(blobs);
+  forced.set("a", { ...forced.get("a")!, vx: 0.01, vy: -0.005 });
+
+  const next = stepPhysics(forced, 100, 800, 600, fixedSequence([0.9]), 1);
+
+  const blob = next.get("a")!;
+  assert.notEqual(blob.vx, 0.01, "velocity should have been perturbed away from its starting value");
+});
+
+// ---------------------------------------------------------------------------
+// applyAttraction — the actual "convergence" signal
+// ---------------------------------------------------------------------------
+
+test("applyAttraction leaves unselected blobs completely untouched", () => {
+  const blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  const before = blobs.get("a")!;
+
+  const next = applyAttraction(blobs, { x: 0, y: 0 }, 1, 1000);
+
+  assert.deepEqual(next.get("a"), before);
+});
+
+test("applyAttraction pulls a selected blob toward the target, closing the gap over time", () => {
+  let blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  blobs = applySelection(blobs, new Set(["a"]));
+  const start = blobs.get("a")!;
+  const target = { x: 0, y: 0 };
+  const startDistance = Math.hypot(start.x - target.x, start.y - target.y);
+
+  let current = blobs;
+  for (let i = 0; i < 20; i++) {
+    current = applyAttraction(current, target, 2, 100);
+  }
+
+  const after = current.get("a")!;
+  const endDistance = Math.hypot(after.x - target.x, after.y - target.y);
+  assert.ok(endDistance < startDistance, "repeated attraction steps must close the distance to the target");
+});
+
+test("applyAttraction with strength=0 is a no-op even for selected blobs", () => {
+  let blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  blobs = applySelection(blobs, new Set(["a"]));
+  const before = blobs.get("a")!;
+
+  const next = applyAttraction(blobs, { x: 0, y: 0 }, 0, 1000);
+
+  assert.equal(next.get("a")!.x, before.x);
+  assert.equal(next.get("a")!.y, before.y);
+});
+
+test("applyAttraction never mutates the map passed in", () => {
+  let blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  blobs = applySelection(blobs, new Set(["a"]));
+  const beforeX = blobs.get("a")!.x;
+
+  applyAttraction(blobs, { x: 0, y: 0 }, 5, 1000);
+
+  assert.equal(blobs.get("a")!.x, beforeX);
 });

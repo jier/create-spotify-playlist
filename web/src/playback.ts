@@ -63,12 +63,26 @@ export function createBlobs(entries: readonly BlobSeed[], width: number, height:
  * Advances every blob by dtMs: gentle random-walk jitter on velocity
  * (damped so it can't run away), move, bounce off the canvas edges.
  * Returns a new Blobs map — never mutates the one passed in.
+ *
+ * jitterScale (0..1, default 1) scales only the *new* random perturbation
+ * added this step, not the blob's existing velocity/movement. The renderer
+ * passes the current SA iteration's temperature here (SimulatedAnnealingConfig
+ * cools from 1.0 toward 0.01) so blobs visibly settle — less new chaotic
+ * energy injected — as the anneal cools, instead of jittering at a constant
+ * rate for the whole run regardless of how close it is to converging.
  */
-export function stepPhysics(blobs: Blobs, dtMs: number, width: number, height: number, random: RandomFn = Math.random): Blobs {
+export function stepPhysics(
+  blobs: Blobs,
+  dtMs: number,
+  width: number,
+  height: number,
+  random: RandomFn = Math.random,
+  jitterScale = 1,
+): Blobs {
   const next: Blobs = new Map();
   for (const blob of blobs.values()) {
-    let vx = clamp(blob.vx + (random() - 0.5) * DRIFT_SPEED * 0.1, -DRIFT_SPEED * 2, DRIFT_SPEED * 2);
-    let vy = clamp(blob.vy + (random() - 0.5) * DRIFT_SPEED * 0.1, -DRIFT_SPEED * 2, DRIFT_SPEED * 2);
+    let vx = clamp(blob.vx + (random() - 0.5) * DRIFT_SPEED * 0.1 * jitterScale, -DRIFT_SPEED * 2, DRIFT_SPEED * 2);
+    let vy = clamp(blob.vy + (random() - 0.5) * DRIFT_SPEED * 0.1 * jitterScale, -DRIFT_SPEED * 2, DRIFT_SPEED * 2);
 
     let x = blob.x + vx * dtMs;
     let y = blob.y + vy * dtMs;
@@ -103,6 +117,40 @@ export function applySelection(blobs: Blobs, selectedIds: ReadonlySet<string>): 
   for (const blob of blobs.values()) {
     const selected = selectedIds.has(blob.id);
     next.set(blob.id, { ...blob, selected, radius: selected ? SELECTED_RADIUS : BASE_RADIUS });
+  }
+  return next;
+}
+
+export interface AttractionTarget {
+  x: number;
+  y: number;
+}
+
+/**
+ * Pulls every *selected* blob a fraction of the way toward `target` each
+ * step; unselected blobs are left untouched. This is the actual
+ * "convergence" signal — without it, `selected` only changed radius
+ * (see applySelection), so the visualization never showed anything
+ * gathering together as the anneal progressed, just uniform random drift
+ * regardless of selection state.
+ *
+ * strength is a rate, not a distance — roughly "fraction of the remaining
+ * gap closed per second". 0 = no pull (selection would only show via
+ * radius, the old behavior). Higher = snaps toward the target faster.
+ */
+export function applyAttraction(blobs: Blobs, target: AttractionTarget, strength: number, dtMs: number): Blobs {
+  const next: Blobs = new Map();
+  const pull = clamp(strength * (dtMs / 1000), 0, 1);
+  for (const blob of blobs.values()) {
+    if (!blob.selected || pull === 0) {
+      next.set(blob.id, blob);
+      continue;
+    }
+    next.set(blob.id, {
+      ...blob,
+      x: blob.x + (target.x - blob.x) * pull,
+      y: blob.y + (target.y - blob.y) * pull,
+    });
   }
   return next;
 }

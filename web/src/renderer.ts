@@ -13,10 +13,18 @@
  *      before anything gets highlighted.
  *   2. "sa" — only if the trace has an SA episode with a reconstructed
  *      selection trajectory (see projector.ts). Steps through
- *      selectionsAfter one iteration at a time at a configurable rate,
- *      highlighting (grows + a distinct radius, via playback.ts's
- *      applySelection) whichever tracks are currently selected.
- *   3. "final" — highlights the actual final playlist and stays there.
+ *      selectionsAfter one iteration at a time at a configurable rate.
+ *      Selected tracks grow (applySelection) *and* get pulled toward the
+ *      seed's current position (applyAttraction) — the actual visual
+ *      "convergence" signal. Without the attraction, selection only
+ *      changed radius; blobs drifted randomly regardless of whether they
+ *      were selected, so nothing ever looked like it was converging, just
+ *      jittering in place. Jitter itself is also scaled by the current
+ *      iteration's temperature (SimulatedAnnealingConfig cools from 1.0 to
+ *      0.01), so blobs visibly settle as the anneal cools, not just at a
+ *      constant chaotic rate for the whole run.
+ *   3. "final" — highlights the actual final playlist (pulled toward the
+ *      seed the same way) and stays there.
  *
  * Not yet implemented: TSP generation playback (population evolving via
  * parent_walk_ids lineage). This first version only animates the SA
@@ -24,7 +32,7 @@
  */
 
 import type { PlaylistDNAViewModel } from "./projector";
-import { applySelection, createBlobs, stepPhysics, type BlobSeed, type Blobs } from "./playback";
+import { applyAttraction, applySelection, createBlobs, stepPhysics, type BlobSeed, type Blobs } from "./playback";
 
 export type Phase = "candidates" | "sa" | "final";
 
@@ -44,6 +52,10 @@ export interface RendererOptions {
 
 const DEFAULT_CANDIDATE_INTRO_MS = 2000;
 const DEFAULT_MS_PER_ITERATION = 15;
+/** Fraction of the remaining gap to the seed a selected blob closes per second. */
+const ATTRACTION_STRENGTH = 1.5;
+/** Floor for the temperature-derived jitter scale — never fully freeze, that reads as broken, not converged. */
+const MIN_JITTER_SCALE = 0.08;
 
 export class Renderer {
   private readonly ctx: CanvasRenderingContext2D;
@@ -118,7 +130,12 @@ export class Renderer {
   };
 
   private advance(dtMs: number): void {
-    this.blobs = stepPhysics(this.blobs, dtMs, this.width, this.height);
+    this.blobs = stepPhysics(this.blobs, dtMs, this.width, this.height, Math.random, this.currentJitterScale());
+
+    const seed = this.blobs.get(this.viewModel.seed.trackId);
+    if (seed) {
+      this.blobs = applyAttraction(this.blobs, { x: seed.x, y: seed.y }, ATTRACTION_STRENGTH, dtMs);
+    }
 
     switch (this.phase) {
       case "candidates":
@@ -133,6 +150,20 @@ export class Renderer {
       case "final":
         break; // final selection already applied, nothing more to advance
     }
+  }
+
+  /**
+   * How much *new* jitter to inject this frame, derived from the current SA
+   * iteration's temperature (already cooling from 1.0 toward 0.01 by
+   * construction — see SimulatedAnnealingConfig). Outside the SA phase
+   * (candidates intro, final) there's no temperature to read, so blobs
+   * drift at full jitter, matching the pre-selection "loose" look.
+   */
+  private currentJitterScale(): number {
+    if (this.phase !== "sa" || this.saIterationIndex < 0) return 1;
+    const episode = this.lastSAEpisode();
+    const temperature = episode?.iterations[this.saIterationIndex]?.temperature;
+    return temperature === undefined ? 1 : Math.max(temperature, MIN_JITTER_SCALE);
   }
 
   private lastSAEpisode() {
