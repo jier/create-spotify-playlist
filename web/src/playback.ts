@@ -64,12 +64,19 @@ export function createBlobs(entries: readonly BlobSeed[], width: number, height:
  * (damped so it can't run away), move, bounce off the canvas edges.
  * Returns a new Blobs map — never mutates the one passed in.
  *
- * jitterScale (0..1, default 1) scales only the *new* random perturbation
- * added this step, not the blob's existing velocity/movement. The renderer
- * passes the current SA iteration's temperature here (SimulatedAnnealingConfig
- * cools from 1.0 toward 0.01) so blobs visibly settle — less new chaotic
- * energy injected — as the anneal cools, instead of jittering at a constant
- * rate for the whole run regardless of how close it is to converging.
+ * selectedJitterScale (0..1, default 1) scales only the *new* random
+ * perturbation added this step, and only for blobs that are currently
+ * `selected` — unselected blobs always get the full, constant ambient
+ * jitter (scale 1), regardless of this parameter. That scoping matters:
+ * the renderer passes the current SA iteration's temperature here
+ * (SimulatedAnnealingConfig cools from 1.0 toward 0.01) so the *selected*
+ * cluster visibly settles as the anneal converges. Applying that same
+ * cooling to every blob was a real bug caught by actually watching the
+ * animation — temperature spends most of a 1000-iteration run at low
+ * values, so the entire candidate pool (including candidates that were
+ * never selected and have nothing to do with the anneal's temperature)
+ * would nearly freeze for most of playback, reading as "nothing is
+ * happening" rather than "the chosen tracks are settling."
  */
 export function stepPhysics(
   blobs: Blobs,
@@ -77,10 +84,11 @@ export function stepPhysics(
   width: number,
   height: number,
   random: RandomFn = Math.random,
-  jitterScale = 1,
+  selectedJitterScale = 1,
 ): Blobs {
   const next: Blobs = new Map();
   for (const blob of blobs.values()) {
+    const jitterScale = blob.selected ? selectedJitterScale : 1;
     let vx = clamp(blob.vx + (random() - 0.5) * DRIFT_SPEED * 0.1 * jitterScale, -DRIFT_SPEED * 2, DRIFT_SPEED * 2);
     let vy = clamp(blob.vy + (random() - 0.5) * DRIFT_SPEED * 0.1 * jitterScale, -DRIFT_SPEED * 2, DRIFT_SPEED * 2);
 

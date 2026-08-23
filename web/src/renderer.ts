@@ -19,10 +19,13 @@
  *      "convergence" signal. Without the attraction, selection only
  *      changed radius; blobs drifted randomly regardless of whether they
  *      were selected, so nothing ever looked like it was converging, just
- *      jittering in place. Jitter itself is also scaled by the current
- *      iteration's temperature (SimulatedAnnealingConfig cools from 1.0 to
- *      0.01), so blobs visibly settle as the anneal cools, not just at a
- *      constant chaotic rate for the whole run.
+ *      jittering in place. The *selected* blobs' jitter is also scaled by
+ *      the current iteration's temperature (SimulatedAnnealingConfig cools
+ *      from 1.0 to 0.01), so the converging cluster visibly settles as the
+ *      anneal cools — unselected candidates keep full ambient jitter the
+ *      whole time regardless (see stepPhysics's selectedJitterScale),
+ *      since the anneal's temperature has nothing to do with candidates
+ *      that were never part of the current selection.
  *   3. "final" — highlights the actual final playlist (pulled toward the
  *      seed the same way) and stays there.
  *
@@ -153,11 +156,16 @@ export class Renderer {
   }
 
   /**
-   * How much *new* jitter to inject this frame, derived from the current SA
-   * iteration's temperature (already cooling from 1.0 toward 0.01 by
-   * construction — see SimulatedAnnealingConfig). Outside the SA phase
-   * (candidates intro, final) there's no temperature to read, so blobs
-   * drift at full jitter, matching the pre-selection "loose" look.
+   * How much *new* jitter to inject this frame into *selected* blobs only
+   * (see stepPhysics's selectedJitterScale param — unselected blobs always
+   * get full ambient jitter regardless of this value, deliberately: this
+   * represents the anneal's temperature, which has nothing to do with
+   * candidates that were never selected). Derived from the current SA
+   * iteration's temperature (cools from 1.0 toward 0.01 by construction —
+   * see SimulatedAnnealingConfig). Outside the SA phase (candidates intro,
+   * final) there's no temperature to read, so this returns 1 — irrelevant
+   * anyway outside "sa", since nothing is selected during "candidates" and
+   * "final" doesn't call this.
    */
   private currentJitterScale(): number {
     if (this.phase !== "sa" || this.saIterationIndex < 0) return 1;

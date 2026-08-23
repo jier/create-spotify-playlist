@@ -117,16 +117,18 @@ test("applySelection grows selected blobs and shrinks deselected ones", () => {
 });
 
 // ---------------------------------------------------------------------------
-// jitterScale — the "settling as temperature cools" behavior
+// selectedJitterScale — the "settling as temperature cools" behavior, scoped
+// to selected blobs only.
 // ---------------------------------------------------------------------------
 
-test("stepPhysics with jitterScale=0 injects no new randomness (velocity carries over unperturbed)", () => {
+test("stepPhysics with selectedJitterScale=0 injects no new randomness into a SELECTED blob", () => {
   let blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  blobs = applySelection(blobs, new Set(["a"]));
   const forced = new Map(blobs);
   forced.set("a", { ...forced.get("a")!, vx: 0.01, vy: -0.005 });
 
-  // random() returns 0.9 here -- if jitterScale actually multiplied it to 0,
-  // the perturbation term must vanish regardless of what random() returns.
+  // random() returns 0.9 here -- if selectedJitterScale actually multiplied
+  // it to 0, the perturbation term must vanish regardless of what random() returns.
   const next = stepPhysics(forced, 100, 800, 600, fixedSequence([0.9]), 0);
 
   const blob = next.get("a")!;
@@ -134,8 +136,9 @@ test("stepPhysics with jitterScale=0 injects no new randomness (velocity carries
   assert.equal(blob.vy, -0.005);
 });
 
-test("stepPhysics with jitterScale=1 (default) does perturb velocity when random() != 0.5", () => {
+test("stepPhysics with selectedJitterScale=1 (default) does perturb a selected blob when random() != 0.5", () => {
   let blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  blobs = applySelection(blobs, new Set(["a"]));
   const forced = new Map(blobs);
   forced.set("a", { ...forced.get("a")!, vx: 0.01, vy: -0.005 });
 
@@ -143,6 +146,23 @@ test("stepPhysics with jitterScale=1 (default) does perturb velocity when random
 
   const blob = next.get("a")!;
   assert.notEqual(blob.vx, 0.01, "velocity should have been perturbed away from its starting value");
+});
+
+test("stepPhysics ignores selectedJitterScale entirely for an UNSELECTED blob — this is the bug that got caught", () => {
+  // Regression test for the real reported bug: temperature-driven cooling was
+  // applied to every blob, not just selected ones, so the whole candidate
+  // pool nearly froze for most of an SA run instead of just the converging
+  // selection. Unselected blobs must always get full ambient jitter (as if
+  // selectedJitterScale=1), no matter what value is actually passed.
+  let blobs = createBlobs([{ id: "a", genres: [] }], 800, 600, fixedSequence([0.5]));
+  // deliberately NOT selected
+  const forced = new Map(blobs);
+  forced.set("a", { ...forced.get("a")!, vx: 0.01, vy: -0.005 });
+
+  const next = stepPhysics(forced, 100, 800, 600, fixedSequence([0.9]), 0);
+
+  const blob = next.get("a")!;
+  assert.notEqual(blob.vx, 0.01, "an unselected blob must still be perturbed even when selectedJitterScale=0");
 });
 
 // ---------------------------------------------------------------------------

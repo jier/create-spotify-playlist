@@ -555,3 +555,15 @@ Verified quantitatively, not just by eye: `web/scripts/verify_convergence.ts` re
 6 new tests in `playback.test.ts` for `applyAttraction` (untouched when unselected, closes the gap over repeated steps, `strength=0` is a no-op, never mutates) and `jitterScale` (0 means no new perturbation at all, default 1 does perturb).
 
 37 web tests total, all Python tests still passing, `tsc`/`vite build` clean.
+
+## Phase 22 — Cooling Was Applied to the Whole Pool, Not Just the Converging Cluster
+
+Reported directly from watching Phase 21's fix: convergence toward the seed was visible now, but the rest of the candidate pool looked frozen, "doing nothing," not reacting to the trace at all.
+
+Real bug, not perception: `stepPhysics`'s `jitterScale` (Phase 21) was applied to *every* blob, selected or not. SA temperature cools from 1.0 toward 0.01 and spends most of a 1000-iteration run at low values — so past roughly iteration 200-300, the entire candidate pool (including the ~48 candidates that were never part of the selection and have nothing to do with the anneal's temperature) would nearly stop moving, for most of the remaining playback.
+
+Fixed by scoping the parameter correctly: renamed to `selectedJitterScale`, and only applied to blobs where `.selected` is true — unselected blobs always get full ambient jitter (as if scale were always 1), regardless of what's passed. The anneal's temperature describes the *converging selection*, not the rest of the catalog.
+
+Verified quantitatively again, extending `web/scripts/verify_convergence.ts`: tracked a candidate that's never selected in any frame of the real fixture and summed its cumulative movement across all 1000 iterations. Before this fix that total would have collapsed once temperature dropped; after the fix it climbs steadily the entire time — 8.5px by iteration 100, 298.9px by iteration 1000 — while the selected cluster still converges correctly (479px -> 13-26px, same as Phase 21). One new regression test in `playback.test.ts` asserts this directly: an unselected blob must still be perturbed even when `selectedJitterScale=0`.
+
+38 web tests total.

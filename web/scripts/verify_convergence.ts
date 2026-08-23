@@ -47,9 +47,22 @@ function avgDistanceOfSelectedToSeed(): number {
   return total / selected.length;
 }
 
+/** Never-selected candidate: proves unselected blobs stay alive throughout, not frozen by SA cooling. */
+const neverSelectedId = [...vm.candidates.keys()].find(
+  (id) => ![...episode.selectionsAfter!, episode.initialSelection!].some((sel) => sel.has(id)),
+);
+if (!neverSelectedId) {
+  console.error("could not find a candidate that's never selected in any frame of this trace — pick a different fixture");
+  process.exit(1);
+}
+
 console.log(`Replaying ${episode.iterations.length} SA iterations for run at ${path}`);
-console.log(`avg distance of selected blobs to seed, sampled every 100 iterations:`);
+console.log(`Tracking a never-selected candidate (${neverSelectedId}) to confirm it keeps moving, not frozen.`);
+console.log(`avg distance of selected blobs to seed  |  cumulative movement of the never-selected blob, sampled every 100 iterations:`);
 console.log(`  iteration 0 (initial random selection): ${avgDistanceOfSelectedToSeed().toFixed(1)}px`);
+
+let unselectedTravel = 0;
+let lastUnselectedPos = { x: blobs.get(neverSelectedId)!.x, y: blobs.get(neverSelectedId)!.y };
 
 for (let i = 0; i < episode.iterations.length; i++) {
   const iter = episode.iterations[i]!;
@@ -60,10 +73,18 @@ for (let i = 0; i < episode.iterations.length; i++) {
   blobs = applyAttraction(blobs, { x: seedBlob.x, y: seedBlob.y }, ATTRACTION_STRENGTH, DT_MS);
   blobs = applySelection(blobs, episode.selectionsAfter[i]!);
 
+  const unselectedBlob = blobs.get(neverSelectedId)!;
+  unselectedTravel += Math.hypot(unselectedBlob.x - lastUnselectedPos.x, unselectedBlob.y - lastUnselectedPos.y);
+  lastUnselectedPos = { x: unselectedBlob.x, y: unselectedBlob.y };
+
   if ((i + 1) % 100 === 0 || i === episode.iterations.length - 1) {
-    console.log(`  iteration ${i + 1}: ${avgDistanceOfSelectedToSeed().toFixed(1)}px  (temperature ${iter.temperature.toFixed(3)})`);
+    console.log(
+      `  iteration ${i + 1}: ${avgDistanceOfSelectedToSeed().toFixed(1)}px  |  cumulative travel: ${unselectedTravel.toFixed(1)}px  (temperature ${iter.temperature.toFixed(3)})`,
+    );
   }
 }
 
 blobs = applySelection(blobs, new Set(vm.final.trackIds));
 console.log(`  final phase: ${avgDistanceOfSelectedToSeed().toFixed(1)}px`);
+console.log(`\nTotal distance traveled by the never-selected blob over the whole anneal: ${unselectedTravel.toFixed(1)}px`);
+console.log(unselectedTravel > 50 ? "PASS: unselected blob kept moving throughout." : "FAIL: unselected blob looks frozen.");
