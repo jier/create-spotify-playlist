@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
@@ -188,46 +188,50 @@ test("reconstructLastEpisodeSelections handles a multi-step chain and only ancho
 });
 
 // ---------------------------------------------------------------------------
-// Real trace verification -- every runs/*.jsonl file the backend has ever
-// actually produced, not just synthetic fixtures.
+// Real trace verification -- against a committed fixture, not the ambient
+// runs/ directory.
+//
+// Two reasons this is a fixture (web/src/fixtures/sample-run.jsonl, copied
+// verbatim from a real server run) rather than scanning runs/*.jsonl:
+//
+// 1. runs/ is gitignored. Scanning it made this suite non-deterministic
+//    across environments -- on a fresh clone or CI, runs/ doesn't exist at
+//    all, so these tests silently wouldn't run, and the "at least one real
+//    trace file was found" assertion would fail outright.
+// 2. runs/ grows unboundedly under normal use (every build_playlist_from_seed
+//    call mints a fresh run_id, see src/services/playlistBuilderService.py).
+//    Scanning it meant this suite's runtime scaled with how much you'd used
+//    the app locally, not with the size of the test suite itself.
+//
+// A single frozen, committed fixture is a real backend output (not
+// synthetic), bounded in size, and identical on every machine. To refresh
+// it against current backend behavior, regenerate a run and copy it in:
+//   cp runs/{run_id}.jsonl web/src/fixtures/sample-run.jsonl
 // ---------------------------------------------------------------------------
 
-const runsDir = join(import.meta.dirname, "..", "..", "runs");
-let realRunFiles: string[] = [];
-try {
-  realRunFiles = readdirSync(runsDir).filter((f) => f.endsWith(".jsonl"));
-} catch {
-  // runs/ doesn't exist locally -- fine, these tests just won't run.
-}
+const fixturePath = join(import.meta.dirname, "fixtures", "sample-run.jsonl");
 
-for (const file of realRunFiles) {
-  test(`buildViewModel handles a real backend-produced trace: ${file}`, () => {
-    const jsonl = readFileSync(join(runsDir, file), "utf-8");
-    const events = parseTrace(jsonl);
+test("buildViewModel handles a real backend-produced trace fixture", () => {
+  const jsonl = readFileSync(fixturePath, "utf-8");
+  const events = parseTrace(jsonl);
 
-    const vm = buildViewModel(events);
+  const vm = buildViewModel(events);
 
-    // Every tsp_generation's members must all resolve (buildViewModel already
-    // throws on failure to resolve, so reaching here proves it for real data).
-    for (const generation of vm.tspGenerations) {
-      assert.ok(generation.members.length > 0);
-    }
+  // Every tsp_generation's members must all resolve (buildViewModel already
+  // throws on failure to resolve, so reaching here proves it for real data).
+  for (const generation of vm.tspGenerations) {
+    assert.ok(generation.members.length > 0);
+  }
 
-    // If there's an SA episode, the last one's reconstructed initial
-    // selection must have exactly as many tracks as the final result
-    // (minus the seed) -- swaps preserve selection size.
-    if (vm.saEpisodes.length > 0) {
-      const lastEpisode = vm.saEpisodes[vm.saEpisodes.length - 1]!;
-      assert.ok(lastEpisode.selectionsAfter);
-      const finalSelectionSize = vm.final.trackIds.filter((id) => id !== vm.seed.trackId).length;
-      assert.equal(lastEpisode.initialSelection!.size, finalSelectionSize);
-      for (const selection of lastEpisode.selectionsAfter!) {
-        assert.equal(selection.size, finalSelectionSize);
-      }
-    }
-  });
-}
-
-test("at least one real trace file was found and exercised", () => {
-  assert.ok(realRunFiles.length > 0, "expected runs/*.jsonl to exist locally for this test to mean anything");
+  // The last SA episode's reconstructed initial selection must have exactly
+  // as many tracks as the final result (minus the seed) -- swaps preserve
+  // selection size.
+  assert.ok(vm.saEpisodes.length > 0, "this fixture is expected to be a strategy=sa run");
+  const lastEpisode = vm.saEpisodes[vm.saEpisodes.length - 1]!;
+  assert.ok(lastEpisode.selectionsAfter);
+  const finalSelectionSize = vm.final.trackIds.filter((id) => id !== vm.seed.trackId).length;
+  assert.equal(lastEpisode.initialSelection!.size, finalSelectionSize);
+  for (const selection of lastEpisode.selectionsAfter!) {
+    assert.equal(selection.size, finalSelectionSize);
+  }
 });

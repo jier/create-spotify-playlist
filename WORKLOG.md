@@ -512,3 +512,12 @@ Real complication caught before it became a silent bug: if the discography fallb
 15 tests in `web/src/projector.test.ts` (Node's built-in `node:test`, zero extra test framework dependency): resolution/error-path unit tests, a hand-traced multi-step backward-reconstruction case verified by hand, the episode-split behavior, and — same discipline as the Python side — two tests that run `buildViewModel` against actual `runs/*.jsonl` files produced by a real server, not just synthetic fixtures, checking the reconstructed selection size stays consistent with the final result throughout. `make web-test`/`make web-check` added.
 
 **Ongoing / Next:** the Canvas renderer itself — nothing draws anything yet. The view model is playback-ready; next is turning it into `requestAnimationFrame` frames.
+
+## Phase 19 — Fixed a Test Suite That Scaled With Local `runs/` Growth
+
+Caught immediately, before it became a real problem: Phase 18's real-trace tests scanned the ambient `runs/` directory (`readdirSync(runsDir).filter(...)`, one test per file found) rather than testing against something fixed. Two real problems with that, not just one:
+
+1. **Non-deterministic across environments.** `runs/` is gitignored. On a fresh clone or CI, it doesn't exist at all — `realRunFiles` would be empty, and the "at least one real trace file was found" assertion would fail outright. The suite silently depended on the local machine's dev history.
+2. **Unbounded runtime.** Every `build_playlist_from_seed` call mints a fresh `run_id`; nothing prunes `runs/` except age-based cleanup on app startup (7-day default). Under normal local development the directory only grows, and the test suite's runtime would grow with it — scaling with how much the app had been used, not with the size of the test suite.
+
+Fixed by committing one real trace as a fixture instead: `web/src/fixtures/sample-run.jsonl`, copied verbatim from an actual server run (not synthetic, not hand-written) — a strategy=sa run with every stage type present. Test count went from "however many files happen to be in runs/ today" to a fixed 1, bounded regardless of local usage, and identical on every machine including a fresh clone. To refresh the fixture against current backend behavior: regenerate a run and copy it in (documented in a comment at the top of that test section).
