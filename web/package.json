@@ -1,0 +1,23 @@
+{
+  "name": "create-spotify-playlist-web",
+  "version": "1.0.0",
+  "description": "Playlist DNA visualization frontend. Pure TypeScript/HTML/CSS, no framework.",
+  "type": "module",
+  "scripts": {
+    "generate-models": "cd .. && uv run python web/scripts/generate_ts_models.py",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  }
+}

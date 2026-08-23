@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Playlist DNA</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #111;
+    color: #eee;
+    font-family: system-ui, sans-serif;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding-top: 16px;
+  }
+
+  #controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  #controls input {
+    font: inherit;
+    padding: 4px 8px;
+    width: 320px;
+  }
+
+  #controls button {
+    font: inherit;
+    padding: 4px 12px;
+    cursor: pointer;
+  }
+
+  #status {
+    font: 13px monospace;
+    color: #aaa;
+    min-height: 1.2em;
+  }
+
+  #stage {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+
+  #scene {
+    background: #111;
+    /* The core technique: the SVG gooey/metaball filter applied via CSS
+       directly to the canvas element, validated in the throwaway
+       prototype before committing to this pipeline. */
+    filter: url(#goo);
+  }
+
+  #sidebar {
+    width: 320px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .panel {
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+
+  .panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #888;
+    margin: 0 0 8px 0;
+  }
+
+  #stats-panel dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 10px;
+    margin: 0;
+    font: 13px monospace;
+  }
+
+  #stats-panel dt {
+    color: #888;
+  }
+
+  #genre-mix {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 8px;
+  }
+
+  #genre-mix span {
+    font: 11px monospace;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: #222;
+    border: 1px solid #444;
+  }
+
+  #walk-tree {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 320px;
+    overflow-y: auto;
+    font: 12px monospace;
+  }
+
+  #walk-tree li {
+    padding: 4px 6px;
+    border-bottom: 1px solid #222;
+    opacity: 1;
+    transition: opacity 0.6s ease;
+  }
+
+  #walk-tree li.fading {
+    opacity: 0;
+  }
+
+  #error-log {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 30vh;
+    overflow: auto;
+    background: rgba(200, 0, 0, 0.85);
+    color: white;
+    font: 12px monospace;
+    padding: 8px;
+    display: none;
+    white-space: pre-wrap;
+    z-index: 10;
+  }
+</style>
+</head>
+<body>
+
+<!-- Hidden SVG filter definition, must live in the same document as #scene. -->
+<svg width="0" height="0" style="position:absolute">
+  <filter id="goo">
+    <feGaussianBlur in="SourceGraphic" stdDeviation="10" result="blur" />
+    <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo" />
+    <feBlend in="SourceGraphic" in2="goo" />
+  </filter>
+</svg>
+
+<div id="controls">
+  <input id="run-id" type="text" placeholder="run_id (from a build_playlist_from_seed response)" />
+  <button id="load">Load</button>
+  <button id="play-pause" disabled>Play</button>
+</div>
+<div id="status"></div>
+
+<div id="stage">
+  <canvas id="scene" width="900" height="600"></canvas>
+
+  <div id="sidebar">
+    <div id="stats-panel" class="panel">
+      <h2>Playlist DNA</h2>
+      <dl>
+        <dt>Tracks in mix</dt><dd id="stat-track-count">—</dd>
+        <dt>Year spread</dt><dd id="stat-year-spread">—</dd>
+        <dt>Avg. distance from seed</dt><dd id="stat-distance">—</dd>
+        <dt>SA energy</dt><dd id="stat-energy">—</dd>
+        <dt>TSP score</dt><dd id="stat-tsp-score">—</dd>
+      </dl>
+      <div id="genre-mix"></div>
+    </div>
+
+    <div class="panel">
+      <h2>TSP walk population (live)</h2>
+      <ul id="walk-tree"></ul>
+    </div>
+  </div>
+</div>
+
+<pre id="error-log"></pre>
+<script>
+  window.addEventListener("error", (e) => {
+    const el = document.getElementById("error-log");
+    el.style.display = "block";
+    el.textContent += `[error] ${e.message} (${e.filename}:${e.lineno})\n`;
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const el = document.getElementById("error-log");
+    el.style.display = "block";
+    el.textContent += `[unhandledrejection] ${e.reason}\n`;
+  });
+</script>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

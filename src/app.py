@@ -1,16 +1,88 @@
-from .services.spotifyService import SpotifyService
-from fastapi import Depends
-from fastapi import FastAPI
-from http import client
+import logging
+from contextlib import asynccontextmanager
+from datetime import date
+from typing import Literal
 
-import os
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
-app = FastAPI()
+from src.algorithms.persistence import cleanup_old_runs, read_run_trace
+from src.services import playlist_builder, spotify
+from src.settings import settings
 
-# Temporary credentials retrieval
-client_id = os.getenv("SPOTIPY_CLIENT_ID", "")
-client_secret = os.getenv("SPOTIPY_CLIENT_SECRET", "")
-spotify = SpotifyService(client_id=client_id, client_secret=client_secret)
+LOOPBACK_ADDRESSES = {"127.0.0.1", "::1"}
+ALLOWED_BROWSER_ORIGINS = {
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+}
+logger = logging.getLogger(__name__)
+
+
+class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
+    """
+    This app has no authentication of its own. Loopback binding is the only
+    access control it has, so it is enforced here rather than relying on the
+    process being started with the right --host flag. If this app is ever
+    run in a container, behind a proxy, or exposed through a tunnel, this
+    guard still rejects every request that does not come from the same
+    machine.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        client_host = request.client.host if request.client else None
+        if client_host not in LOOPBACK_ADDRESSES:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "This service only accepts requests from localhost."},
+            )
+        return await call_next(request)
+
+
+class BrowserOriginMiddleware(BaseHTTPMiddleware):
+    """Reject cross-origin browser mutations while preserving CLI access.
+
+    Loopback-only access is not CSRF protection: a malicious public website
+    can submit a form to 127.0.0.1, and that connection still originates from
+    loopback. Browsers attach Origin to cross-origin POST/DELETE requests, so
+    unsafe requests with an Origin must come from this app or its Vite dev
+    server. Non-browser clients such as curl omit Origin and remain supported.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            if origin is not None and origin not in ALLOWED_BROWSER_ORIGINS:
+                return JSONResponse(status_code=403, content={"detail": "Cross-origin mutation rejected."})
+        return await call_next(request)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Prune run traces older than settings.runs_retention_days on every startup.
+
+    Nothing else deletes these — every build_playlist_from_seed call mints a
+    fresh run_id, so runs/ grows unbounded otherwise. `make clean-runs` runs
+    the same cleanup on demand without restarting the server.
+    """
+    deleted = cleanup_old_runs(settings.runs_dir, settings.runs_retention_days)
+    if deleted:
+        logger.info(
+            "Startup cleanup: removed %d run trace(s) older than %s days", len(deleted), settings.runs_retention_days
+        )
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(LoopbackOnlyMiddleware)
+app.add_middleware(BrowserOriginMiddleware)
+
+
+class RemoveTracksRequest(BaseModel):
+    track_ids: list[str]
 
 
 @app.get("/")
@@ -18,15 +90,109 @@ def read_route():
     return "Hello World"
 
 
-@app.get("/test_auth")
-def test_auth():
-    # TODO: remove this endpoint. This should be done behind the scenes
-    result = spotify.auth()
-    return result
+@app.get("/login")
+def login():
+    return RedirectResponse(spotify.get_auth_url())
+
+
+@app.get("/callback")
+def callback(code: str, state: str):
+    spotify.exchange_code(code, state)
+    return {"message": "Authenticated successfully"}
+
+
+@app.get("/me/playlists")
+def get_my_playlists(query: str | None = None, offset: int = 0, limit: int = 50):
+    if query:
+        items = spotify.search_my_playlists(query)
+        return {"total": len(items), "items": items}
+    return spotify.get_my_playlists(offset=offset, limit=limit)
+
+
+@app.get("/me/tracks")
+def get_liked_songs(offset: int = 0, limit: int = 50):
+    return spotify.get_liked_songs(offset=offset, limit=limit)
+
+
+@app.get("/me/tracks/before/{date}")
+def get_liked_songs_before(date: date, offset: int = 0, limit: int = 50):
+    return spotify.get_liked_songs_before(date.isoformat(), offset=offset, limit=limit)
+
+
+@app.get("/me/tracks/after/{date}")
+def get_liked_songs_after(date: date, offset: int = 0, limit: int = 50):
+    return spotify.get_liked_songs_after(date.isoformat(), offset=offset, limit=limit)
+
+
+@app.delete("/me/tracks")
+def remove_liked_songs(body: RemoveTracksRequest):
+    return spotify.remove_liked_songs(track_ids=body.track_ids)
+
+
+@app.delete("/me/tracks/before/{date}")
+def delete_liked_songs_on_or_before(date: date, dry_run: bool = True):
+    count = spotify.delete_liked_songs_on_or_before(date.isoformat(), dry_run=dry_run)
+    return {"deleted": count, "dry_run": dry_run}
+
+
+@app.get("/playlists/{playlist_id}/tracks")
+def get_playlist_tracks(playlist_id: str, offset: int = 0, limit: int = 50):
+    return spotify.get_playlist_tracks(playlist_id=playlist_id, offset=offset, limit=limit)
+
+
+@app.delete("/playlists/{playlist_id}/tracks")
+def remove_playlist_tracks(playlist_id: str, body: RemoveTracksRequest):
+    return spotify.remove_playlist_tracks(playlist_id=playlist_id, track_ids=body.track_ids)
 
 
 @app.get("/users/{user_id}/playlists")
 def get_user_playlists(user_id: str):
-    #
-    playlists = spotify.get_user_playlists(user_id)
-    return playlists
+    return spotify.get_user_playlists(user_id)
+
+
+@app.post("/me/playlists/seed/{track_id}")
+def build_playlist_from_seed(
+    track_id: str,
+    n: int = Query(default=20, ge=1, le=100),
+    dry_run: bool = True,
+    strategy: Literal["greedy", "sa"] = "greedy",
+):
+    return playlist_builder.build_playlist_from_seed(track_id, n=n, dry_run=dry_run, strategy=strategy)
+
+
+@app.post(
+    "/me/playlists/{genre}/chronological",
+    deprecated=True,
+    description="Searches only liked songs. Prefer POST /me/playlists/seed/{track_id} for full catalog discovery.",
+)
+def build_chronological_playlist(genre: str, dry_run: bool = True):
+    return playlist_builder.build_genre_playlist_chronological(genre, dry_run=dry_run)
+
+
+@app.post(
+    "/me/playlists/{genre}/tsp",
+    deprecated=True,
+    description="Searches only liked songs. Prefer POST /me/playlists/seed/{track_id} for full catalog discovery.",
+)
+def build_tsp_playlist(genre: str, dry_run: bool = True):
+    return playlist_builder.build_genre_playlist_tsp(genre, dry_run=dry_run)
+
+
+@app.get("/runs/{run_id}")
+def get_run_trace(run_id: str):
+    """
+    Serve a persisted run's JSONL trace (src/algorithms/persistence.py) — the
+    seed/candidate/threshold_step/sa_iteration/tsp_walk/tsp_generation/final
+    events the DNA visualization frontend replays. build_playlist_from_seed
+    returns run_id/trace_path; fetch this endpoint with that run_id to get
+    the actual content, since a browser can't read the local runs/ file
+    directly.
+
+    Returned as raw JSONL text (one JSON object per line), matching the
+    on-disk format exactly rather than re-parsing into a JSON array.
+    """
+    try:
+        content = read_run_trace(run_id, runs_dir=settings.runs_dir)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return PlainTextResponse(content, media_type="application/x-ndjson")
