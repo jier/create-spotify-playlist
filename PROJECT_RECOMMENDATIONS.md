@@ -30,6 +30,21 @@ Track progress here. Check each box when done.
    - Verified end to end repeatedly against a real running backend + real Vite dev server + a real browser (CDP-driven): phase transitions, live stat/score readouts matching the headless-verified numbers exactly, walk-tree list growing and shrinking, and the TSP chase highlight actually appearing on canvas during the TSP phase.
    - Artist pictures in the blobs (the earlier idea) deliberately deferred, not forgotten — a conscious scope decision, not a gap.
 7. [ ] Confirm Spotify Developer Policy compliance before offering the app to other users.
+8. [ ] Make the frontend self-sufficient for a live demo: right now it can only *view* a run that already exists (`GET /runs/{run_id}`) — generating one still requires a manual `curl`/Postman call outside the browser first, which breaks flow for a live demo (fine for a pre-generated/rehearsed one). Two asks, really one underlying capability: let the frontend *trigger* a new backend run, not just replay an existing one.
+
+   **8a. "Regenerate" — rerun the currently-loaded seed and visualize the new result.**
+   SA and the TSP genetic algorithm are both stochastic (`random.sample`/`random.choice` throughout `src/algorithms/selection.py` and `tsp.py`, no seeded RNG) — the same seed track produces a *different* trace every call. A "Regenerate" button next to Load, reusing whatever seed track_id is already loaded, is the smallest version of "trigger a new run from the frontend": no new UI beyond one button + a strategy/`n` control, but real value — comparing runs of the same seed side by side is a genuinely interesting demo moment ("watch it converge differently every time").
+
+   **8b. Seed-track input — build a playlist from any song, not just a pre-generated run_id.**
+   The generalization of 8a: let the user type a song (not a raw track_id — nobody has those memorized, bad for a demo) and get a playlist built + visualized end to end. Needs a real search step first.
+
+   **What both need, shared:**
+   - A new frontend `api.ts` (or extending `traceEvent.ts`) with `buildPlaylistFromSeed(trackId, { n, strategy }): Promise<{ runId: string }>` — `POST /me/playlists/seed/{track_id}?n=...&strategy=...&dry_run=true`. **`dry_run` must always be hardcoded `true` from the frontend, never exposed as a toggle** — this UI is for visualizing the algorithm, not for creating real Spotify playlists; that stays a deliberate, explicit backend-only/CLI action, matching the existing "every destructive operation defaults to dry_run=true" safety posture in the README.
+   - `_assemble_seed_playlist_result` (`src/services/playlistBuilderService.py`) currently returns a plain `dict`, not a Pydantic model — unlike every trace event, this response was never part of the codegen'd wire protocol. For consistency with "backend is the source of truth, nothing hand-duplicated on the frontend," this needs an actual Pydantic response model (at minimum `run_id`, `error: str | None`) added to `src/algorithms/models.py` or a new `src/api_models.py`, wired into `generate_ts_models.py`'s scope, so `buildPlaylistFromSeed`'s return type is generated too, not hand-typed.
+   - Loading state + the existing actionable-error pattern from `fetchTrace` reused here (backend not running, non-2xx, etc.).
+   - On success: auto-`fetchTrace(runId)` + construct a new `Renderer`, same as a manual Load does today — the two code paths (paste a run_id vs. build one live) should converge on the same "load and render" function rather than duplicating it.
+
+   **8b additionally needs, before the input is usable for a demo**: a real search endpoint. There is currently no HTTP endpoint wrapping `SpotifyService.search_tracks` — `POST /me/playlists/seed/{track_id}` requires already knowing a Spotify track_id. Add e.g. `GET /search/tracks?q=...` (thin wrapper, same shape as the existing `/me/playlists?query=...` pattern) returning enough per-track info (id, name, artist) for a simple autocomplete/results list in the frontend, so the actual UX is: type a song name -> pick from real search results -> Build -> auto-load + play. Without this, 8b degrades to "paste a track_id you looked up yourself," which is 8a with extra steps, not a real "give it a song" experience.
 
 ## Interface Choice
 
