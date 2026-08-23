@@ -7,7 +7,19 @@ events that become one JSONL line each once persistence is wired up. Keeping
 them in one file makes it visible at a glance which types in this package are
 contracts, versus the plain lists/dicts the algorithms compute with
 internally, which don't need this treatment.
+
+This module is the source of truth for the wire protocol: web/scripts/generate_ts_models.py
+compiles the trace event models below into web/src/generated/models.ts (Zod
+schemas) via pydantic2zod. Every *TraceEvent model's `stage` field is a
+Literal, not a plain str — required for the generated Zod schemas to form a
+proper discriminated union on `stage` (z.discriminatedUnion), not just a
+loose string the frontend has to trust. DistanceWeights/GreedySelectionConfig/
+SimulatedAnnealingConfig are deliberately excluded from codegen (see
+IGNORE_TYPES in that script) — they're backend algorithm tuning, never
+serialized into the trace or any HTTP response.
 """
+
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -41,7 +53,7 @@ class SimulatedAnnealingConfig(BaseModel):
 class SAIterationEvent(BaseModel):
     """One simulated annealing iteration. Written as one JSONL line by RunTraceWriter."""
 
-    stage: str = "sa_iteration"
+    stage: Literal["sa_iteration"] = "sa_iteration"
     iteration: int
     temperature: float
     energy: float
@@ -53,7 +65,7 @@ class SAIterationEvent(BaseModel):
 class SeedTraceEvent(BaseModel):
     """The seed track a run started from. First line of every run's JSONL file."""
 
-    stage: str = "seed"
+    stage: Literal["seed"] = "seed"
     track_id: str
     genres: list[str]
     release_year: int
@@ -62,7 +74,7 @@ class SeedTraceEvent(BaseModel):
 class CandidateTraceEvent(BaseModel):
     """One candidate considered for the playlist, whether or not it was selected."""
 
-    stage: str = "candidate"
+    stage: Literal["candidate"] = "candidate"
     track_id: str
     name: str
     artist_name: str
@@ -74,7 +86,7 @@ class CandidateTraceEvent(BaseModel):
 class FinalTraceEvent(BaseModel):
     """The final ordered playlist a run produced. Last line of every run's JSONL file."""
 
-    stage: str = "final"
+    stage: Literal["final"] = "final"
     track_ids: list[str]
     tsp_score: float
     initial_score: float
@@ -88,7 +100,7 @@ class ThresholdStepEvent(BaseModel):
     loop over the same [max_candidate_distance, 0.85, 0.95, 1.0] progression.
     """
 
-    stage: str = "threshold_step"
+    stage: Literal["threshold_step"] = "threshold_step"
     threshold: float
     candidates_passing: int
     accepted: bool
@@ -116,7 +128,7 @@ class TSPWalkEvent(BaseModel):
     walk_id appeared in this generation."
     """
 
-    stage: str = "tsp_walk"
+    stage: Literal["tsp_walk"] = "tsp_walk"
     walk_id: int
     track_ids: list[str]
     parent_walk_ids: list[int] = []
@@ -143,6 +155,6 @@ class TSPGenerationEvent(BaseModel):
     generations 1..N are each one selection -> crossover -> mutation cycle.
     """
 
-    stage: str = "tsp_generation"
+    stage: Literal["tsp_generation"] = "tsp_generation"
     generation: int
     members: list[TSPPopulationMember]
