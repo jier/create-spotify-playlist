@@ -340,9 +340,8 @@ class PlaylistBuilderService:
           7. Prepend seed track → create playlist or return dry run stats
 
         Every call writes a JSONL trace to runs/{run_id}.jsonl (see
-        ../algorithms/persistence.py for exactly what stages are captured —
-        sa_iteration lines only exist when strategy="sa", threshold_step and
-        tsp_generation are not implemented yet).
+        ../algorithms/persistence.py for the complete stage contract;
+        sa_iteration lines only exist when strategy="sa").
         """
         run_id = run_id or uuid.uuid4().hex
         writer = RunTraceWriter(run_id, runs_dir=settings.runs_dir)

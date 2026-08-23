@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -13,6 +13,12 @@ from src.services import playlist_builder, spotify
 from src.settings import settings
 
 LOOPBACK_ADDRESSES = {"127.0.0.1", "::1"}
+ALLOWED_BROWSER_ORIGINS = {
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +42,24 @@ class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class BrowserOriginMiddleware(BaseHTTPMiddleware):
+    """Reject cross-origin browser mutations while preserving CLI access.
+
+    Loopback-only access is not CSRF protection: a malicious public website
+    can submit a form to 127.0.0.1, and that connection still originates from
+    loopback. Browsers attach Origin to cross-origin POST/DELETE requests, so
+    unsafe requests with an Origin must come from this app or its Vite dev
+    server. Non-browser clients such as curl omit Origin and remain supported.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            if origin is not None and origin not in ALLOWED_BROWSER_ORIGINS:
+                return JSONResponse(status_code=403, content={"detail": "Cross-origin mutation rejected."})
+        return await call_next(request)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Prune run traces older than settings.runs_retention_days on every startup.
@@ -54,6 +78,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(LoopbackOnlyMiddleware)
+app.add_middleware(BrowserOriginMiddleware)
 
 
 class RemoveTracksRequest(BaseModel):
@@ -128,7 +153,7 @@ def get_user_playlists(user_id: str):
 @app.post("/me/playlists/seed/{track_id}")
 def build_playlist_from_seed(
     track_id: str,
-    n: int = 20,
+    n: int = Query(default=20, ge=1, le=100),
     dry_run: bool = True,
     strategy: Literal["greedy", "sa"] = "greedy",
 ):

@@ -3,7 +3,7 @@ from collections.abc import Iterable
 import pytest
 
 from src.algorithms.models import DistanceWeights, TSPGenerationEvent, TSPWalkEvent
-from src.algorithms.tsp import TSPOptimizer, TSPTraceEvent, order_by_tsp
+from src.algorithms.tsp import TSPOptimizer, TSPTraceEvent, Walk, order_by_tsp
 
 
 @pytest.mark.parametrize("track_count", [6, 2], ids=["six_tracks", "two_tracks"])
@@ -113,6 +113,30 @@ def test_run_to_completion_bundles_walk_and_generation_events_with_final_result(
     assert len(_walk_events(trace)) >= 1
 
 
+def test_optimizer_returns_best_walk_seen_not_only_last_generation(rock_track_features, monkeypatch):
+    optimizer = TSPOptimizer(rock_track_features(6), DistanceWeights(), population_size=8, generations=1)
+    initial_best_score = optimizer.initial_score
+
+    def make_every_walk_worse(population, _graph, _register):
+        return [
+            Walk(
+                track_ids=walk.track_ids,
+                score=walk.score + 10,
+                walk_id=walk.walk_id,
+                parent_walk_ids=walk.parent_walk_ids,
+            )
+            for walk in population
+        ]
+
+    monkeypatch.setattr("src.algorithms.tsp._apply_genetics", make_every_walk_worse)
+
+    _, final_score, _, trace = optimizer.run_to_completion()
+
+    last_generation = _generation_events(trace)[-1]
+    assert min(member.score for member in last_generation.members) > initial_best_score
+    assert final_score == initial_best_score
+
+
 # ---------------------------------------------------------------------------
 # TSPOptimizer — walk lineage (parent_walk_ids)
 # ---------------------------------------------------------------------------
@@ -126,7 +150,11 @@ def test_initial_population_walks_have_no_parents(rock_track_features):
     trace = list(optimizer.run())
 
     walks = _walk_events(trace)
-    assert len(walks) == 8
+    # Eight population slots do not guarantee eight distinct orderings:
+    # random shuffles can collide and the content-addressed registry emits a
+    # TSPWalkEvent only once per distinct ordering. The separate population
+    # test above verifies all eight slots are still present.
+    assert 1 <= len(walks) <= 8
     assert all(w.parent_walk_ids == [] for w in walks)
 
 

@@ -395,7 +395,7 @@ export class Renderer {
       saEnergy: saIter?.energy ?? null,
       tspGeneration: this.tspGenerationIndex + 1,
       tspGenerationsTotal: this.viewModel.tspGenerations.length,
-      tspBestScore: bestMember?.score ?? null,
+      tspBestScore: this.phase === "final" ? this.viewModel.final.tspScore : (bestMember?.score ?? null),
       tspInitialScore: initialBestMember?.score ?? null,
     });
   }

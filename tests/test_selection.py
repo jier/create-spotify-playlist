@@ -54,6 +54,11 @@ def test_select_greedy_relaxes_threshold_when_seed_genre_has_no_close_match():
     assert [step.candidates_passing for step in threshold_trace] == [0, 0, 0, 1]
 
 
+def test_select_greedy_rejects_non_positive_track_count(rock_seed_feat):
+    with pytest.raises(ValueError, match="n must be at least 1"):
+        select_greedy([], rock_seed_feat, {}, n=0, config=GreedySelectionConfig())
+
+
 # ---------------------------------------------------------------------------
 # _energy — standalone, no closures, directly testable on its own
 # ---------------------------------------------------------------------------
@@ -94,6 +99,15 @@ def test_energy_decreases_as_diversity_weight_increases_for_a_diverse_pair():
     high_beta = _energy([0, 1], pool, seed_feat, DistanceWeights(), diversity_weight=0.9, n=2)
 
     assert high_beta < low_beta
+
+
+def test_energy_for_one_track_has_zero_pairwise_diversity():
+    pool = [["a", {"genres": {"pop"}, "release_year": 2000}]]
+    seed_feat = ["seed", {"genres": {"rock"}, "release_year": 2000}]
+
+    result = _energy([0], pool, seed_feat, DistanceWeights(), diversity_weight=0.5, n=1)
+
+    assert result == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +160,21 @@ def test_simulated_annealer_run_yields_one_event_per_iteration(rock_candidate_po
     assert [e.iteration for e in events] == list(range(10))
 
 
+def test_simulated_annealer_supports_one_track_selection(rock_candidate_pool, rock_seed_feat):
+    candidate_features, _ = rock_candidate_pool(3)
+    annealer = SimulatedAnnealer(SimulatedAnnealingConfig(iterations=3), candidate_features, rock_seed_feat, n=1)
+
+    top_n, _, _, trace, _ = annealer.run_to_completion()
+
+    assert len(top_n) == 1
+    assert len(trace) == 3
+
+
+def test_simulated_annealer_rejects_non_positive_track_count(rock_seed_feat):
+    with pytest.raises(ValueError, match="n must be at least 1"):
+        SimulatedAnnealer(SimulatedAnnealingConfig(), [], rock_seed_feat, n=0)
+
+
 def test_simulated_annealer_run_to_completion_returns_n_distinct_tracks_and_full_trace(
     rock_candidate_pool, rock_seed_feat
 ):
@@ -175,6 +204,25 @@ def test_simulated_annealer_trace_events_carry_valid_ids_across_pool(rock_candid
         assert event.in_track_id in candidate_tracks
         assert isinstance(event.accepted, bool)
         assert event.temperature > 0
+
+
+def test_rejected_sa_proposal_reports_committed_energy(monkeypatch):
+    seed = ["seed", {"genres": {"rock"}, "release_year": 2000}]
+    pool = [
+        ["a", {"genres": {"rock"}, "release_year": 2000}],
+        ["b", {"genres": {"rock"}, "release_year": 2001}],
+        ["far", {"genres": {"pop"}, "release_year": 2020}],
+    ]
+    config = SimulatedAnnealingConfig(iterations=1, max_candidate_distance=1.0)
+    monkeypatch.setattr("src.algorithms.selection.random.sample", lambda _population, _n: [0, 1])
+    monkeypatch.setattr("src.algorithms.selection.random.randrange", lambda _limit: 0)
+    monkeypatch.setattr("src.algorithms.selection.random.random", lambda: 1.0)
+    initial_energy = _energy([0, 1], pool, seed, config.weights, config.diversity_weight, n=2)
+
+    _, _, _, trace, _ = SimulatedAnnealer(config, pool, seed, n=2).run_to_completion()
+
+    assert trace[0].accepted is False
+    assert trace[0].energy == initial_energy
 
 
 def test_simulated_annealer_relaxes_threshold_when_seed_genre_has_no_close_match():

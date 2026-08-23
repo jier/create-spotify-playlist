@@ -42,6 +42,9 @@ def select_greedy(
     Relax Jaccard threshold progressively until n tracks are found.
     Returns (top_n, fallback_label, threshold_used, threshold_trace).
     """
+    if n < 1:
+        raise ValueError("n must be at least 1")
+
     seed_genres = seed_feat[1].get("genres", set())
     fallback = "genre_search"
     threshold_used = config.max_candidate_distance
@@ -94,7 +97,11 @@ def _energy(
     sel = [pool[i] for i in sel_idx]
     avg_relevance = sum(get_distance(seed_feat, c, weights) for c in sel) / n
     n_pairs = n * (n - 1) // 2
-    avg_diversity = sum(get_distance(sel[i], sel[j], weights) for i in range(n) for j in range(i + 1, n)) / n_pairs
+    avg_diversity = (
+        sum(get_distance(sel[i], sel[j], weights) for i in range(n) for j in range(i + 1, n)) / n_pairs
+        if n_pairs
+        else 0.0
+    )
     return avg_relevance - diversity_weight * avg_diversity
 
 
@@ -116,7 +123,7 @@ class SimulatedAnnealer:
     request; nothing reuses one instance across multiple candidate pools).
 
     run() is a generator: it yields one SAIterationEvent per iteration as the
-    anneal actually proceeds, so a caller (the upcoming JSONL writer) can
+    anneal actually proceeds, so a caller (RunTraceWriter) can
     write each line out as it happens rather than waiting for every iteration
     to finish first. The final (top_n, fallback_label, threshold_used) is the
     generator's return value, delivered via StopIteration.value the same way
@@ -137,6 +144,9 @@ class SimulatedAnnealer:
         seed_feat: list,
         n: int,
     ) -> None:
+        if n < 1:
+            raise ValueError("n must be at least 1")
+
         self._config = config
         self._seed_feat = seed_feat
         self._n = n
@@ -206,7 +216,7 @@ class SimulatedAnnealer:
             yield SAIterationEvent(
                 iteration=iteration,
                 temperature=self._temperature,
-                energy=new_energy,
+                energy=self._current_energy,
                 accepted=accepted,
                 out_track_id=self._genre_relevant[out_idx][0],
                 in_track_id=self._genre_relevant[in_idx][0],

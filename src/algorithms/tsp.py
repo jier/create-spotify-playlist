@@ -157,6 +157,7 @@ class TSPOptimizer:
         initial = [self._register(*_get_walk(self._graph), []) for _ in range(population_size)]
         self._population = _sort_walks(initial)
         self.initial_score = self._population[0].score
+        self._best_so_far = self._population[0]
 
     def _register(self, track_ids: tuple[str, ...], score: float, parent_walk_ids: list[int]) -> Walk:
         """Resolve track_ids to a Walk with a stable, content-addressed walk_id.
@@ -199,9 +200,11 @@ class TSPOptimizer:
         for generation in range(1, self._generations + 1):
             self._population = _apply_genetics(self._population, self._graph, self._register)
             self._population = _sort_walks(self._population)
+            if self._population[0].score < self._best_so_far.score:
+                self._best_so_far = self._population[0]
             yield from self._process_generation(generation)
 
-        best = self._population[0]
+        best = self._best_so_far
         return list(best.track_ids), best.score, self.initial_score
 
     def run_to_completion(self) -> tuple[list[str], float, float, list[TSPTraceEvent]]:

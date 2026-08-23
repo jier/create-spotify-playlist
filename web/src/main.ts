@@ -67,7 +67,7 @@ function renderPhaseSpecificStats(status: PlaybackStatus): void {
         : "";
     statTspScore.textContent = `${status.tspBestScore.toFixed(3)} ${improvement}`;
   } else if (status.phase === "final") {
-    // left as whatever the last TSP generation reported -- final doesn't recompute a new score.
+    statTspScore.textContent = status.tspBestScore !== null ? status.tspBestScore.toFixed(3) : "—";
   } else {
     statTspScore.textContent = "—";
   }

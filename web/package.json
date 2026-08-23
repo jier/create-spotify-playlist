@@ -1,6 +1,6 @@
 {
   "name": "create-spotify-playlist-web",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Playlist DNA visualization frontend. Pure TypeScript/HTML/CSS, no framework.",
   "type": "module",
   "scripts": {
