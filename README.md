@@ -42,6 +42,14 @@ The service binds to `127.0.0.1` only. It is a personal tool, not a public multi
 
 Query parameters: `n` (track count, default 20), `dry_run` (default true), `strategy` (`greedy` or `sa`, default `greedy`).
 
+### Playlist DNA Traces
+
+Every call to the seed endpoint writes a JSONL trace of the run to `runs/{run_id}.jsonl`: the seed, every candidate considered, every genre-threshold relaxation step, every simulated annealing iteration (`strategy=sa` only), every distinct TSP track ordering with its parent lineage, and the final result. The response includes `run_id` and `trace_path`.
+
+`GET /runs/{run_id}` serves a run's trace back as raw JSONL (`application/x-ndjson`). This is the data source for an in-progress playlist DNA visualization, see `web/` under Development below; there is no user-facing visualization yet.
+
+Traces are not kept forever. `runs/` is pruned automatically on every app startup, deleting anything older than `runs_retention_days` (default 7 days), and on demand via `make clean-runs`.
+
 ## Other Endpoints
 
 `GET /me/tracks`, list liked songs, paginated.
@@ -60,7 +68,11 @@ Every destructive operation defaults to `dry_run=true`. Always run a dry run fir
 
 ## Development
 
-Run `make lint` for style checks, `make typecheck` for type checks, `make test` for the test suite, and `make check` for lint plus typecheck together.
+Run `make lint` for style checks, `make typecheck` for type checks, `make test` for the test suite, and `make check` for lint plus typecheck together. `make clean-runs` prunes old playlist DNA traces on demand (see Playlist DNA Traces above).
+
+### Frontend (`web/`)
+
+`web/` is a separate, in-progress TypeScript package for the playlist DNA visualization — no UI exists yet, this is currently just the data layer. Pure TypeScript/HTML/CSS, no frontend framework. The backend (`src/algorithms/models.py`) is the source of truth for the wire protocol: `make generate-ts-models` (or `uv run python web/scripts/generate_ts_models.py`) compiles those Pydantic models into Zod schemas at `web/src/generated/models.ts` via `pydantic2zod`, so the frontend's types can't silently drift from what the backend actually emits. Run `make web-typecheck` (or `cd web && npx tsc --noEmit`) to type-check it.
 
 ## License
 
